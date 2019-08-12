@@ -72,4 +72,8 @@ notifications:
     webhooks:
       urls: 
         - https://vdokahpp1h.apigw.ntruss.com/test/test/Nr0XtdeJVd
-      on_start: always
+      on_start: true
+      on_success: change # default: always
+      on_failure: always # default: always
+      on_cancel:  always # default: always
+      on_error:   always # default: always
