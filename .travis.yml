@@ -72,4 +72,4 @@ notifications:
     webhooks:
       urls: 
         - https://vdokahpp1h.apigw.ntruss.com/test/test/Nr0XtdeJVd
-        on_start: always
+      on_start: always
