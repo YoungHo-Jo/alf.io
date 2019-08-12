@@ -68,3 +68,8 @@ script:
     - TERM=dumb ./gradlew build jacocoTestReport $PROFILE
 after_success:
     ./gradlew coveralls
+notifications:
+    webhooks:
+      urls: 
+        - https://vdokahpp1h.apigw.ntruss.com/test/test/Nr0XtdeJVd
+        on_start: always
