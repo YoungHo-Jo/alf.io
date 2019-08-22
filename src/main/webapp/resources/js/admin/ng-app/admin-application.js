@@ -1,14 +1,16 @@
 (function () {
     "use strict";
 
-    var BASE_TEMPLATE_URL = "/admin/partials";
+
     var BASE_STATIC_URL = "/resources/angular-templates/admin/partials";
 
     //
     var FIELD_TYPES = ['input:text', 'input:tel', 'textarea', 'select', 'country'];
     var ERROR_CODES = { DUPLICATE:'duplicate', MAX_LENGTH:'maxlength', MIN_LENGTH:'minlength'};
     
-    var admin = angular.module('adminApplication', ['ngSanitize','ui.bootstrap', 'ui.router', 'adminDirectives', 'adminServices', 'utilFilters', 'ngMessages', 'ngFileUpload', 'nzToggle', 'alfio-plugins', 'alfio-email', 'alfio-util', 'alfio-configuration', 'alfio-additional-services', 'alfio-event-statistic', 'ui.ace', 'monospaced.qrcode']);
+    var admin = angular.module('adminApplication', ['ngSanitize','ui.bootstrap', 'ui.router', 'adminDirectives',
+        'adminServices', 'utilFilters', 'ngMessages', 'ngFileUpload', 'nzToggle', 'alfio-email', 'alfio-util', 'alfio-configuration', 'alfio-additional-services', 'alfio-event-statistic',
+        'ui.ace', 'monospaced.qrcode', 'checklist-model', 'group', angularDragula(angular)]);
 
     var loadEvent = {
         'loadEvent': function($stateParams, EventService) {
@@ -25,7 +27,12 @@
         $stateProvider
             .state('index', {
                 url: "/",
-                templateUrl: BASE_TEMPLATE_URL + "/index.html"
+                template: ['<div class="container" container-fluid-responsive="">',
+                               '<h1>Dashboard</h1>',
+                               '<hr />',
+                               '<active-events-list></active-events-list>',
+                               '<expired-events-list></expired-events-list>',
+                           '</div>'].join('')
             })
             .state('organizations', {
                 url: "/organizations/",
@@ -49,15 +56,24 @@
                     }
                 }
             })
+            .state('organization-edit-resources', {
+                url: '/organizations/:organizationId/show-resources/:resourceName/',
+                template: '<resources-edit for-organization="true" organization-id="ctrl.organizationId" resource-name="ctrl.resourceName"></resources-show>',
+                controller: function($state) {
+                    this.organizationId = $state.params.organizationId;
+                    this.resourceName = $state.params.resourceName;
+                },
+                controllerAs: 'ctrl'
+            })
             .state('users', {
                 url: "/users/",
-                template: "<users></users>"
+                template: "<users data-title='Users' type='user'></users>"
             })
             .state('users.new', {
                 url: "new",
                 views: {
                     "editUser": {
-                        template: "<user-edit type='new'></user-edit>"
+                        template: "<user-edit type='new' for='user'></user-edit>"
                     }
                 }
             })
@@ -65,9 +81,39 @@
                 url: ":userId/edit",
                 views: {
                     "editUser": {
-                        template: "<user-edit type='edit' user-id='$ctrl.$state.params.userId'></user-edit>",
+                        template: "<user-edit type='edit' for='user' user-id='$ctrl.$state.params.userId'></user-edit>",
                         controller: ['$state', function($state) {this.$state = $state;}],
                         controllerAs: '$ctrl'
+                    }
+                }
+            })
+            .state('apikey', {
+                url: "/api-keys/",
+                template: "<users data-title='Api Keys' type='apikey'></users>"
+            })
+            .state('apikey.new', {
+                url: "new",
+                views: {
+                    "editUser": {
+                        template: "<user-edit type='new' for='apikey'></user-edit>"
+                    }
+                }
+            })
+            .state('apikey.edit', {
+                url: ":userId/edit",
+                views: {
+                    "editUser": {
+                        template: "<user-edit type='edit' for='apikey' user-id='$ctrl.$state.params.userId'></user-edit>",
+                        controller: ['$state', function($state) {this.$state = $state;}],
+                        controllerAs: '$ctrl'
+                    }
+                }
+            })
+            .state('apikey.bulk', {
+                url: "bulk-creation",
+                views: {
+                    "editUser": {
+                        template: "<api-key-bulk-import></api-key-bulk-import>"
                     }
                 }
             })
@@ -86,14 +132,6 @@
                 controller: 'CreateEventController',
                 data: {
                     eventType: 'INTERNAL'
-                }
-            })
-            .state('events.newLink', {
-                url: '/new-external',
-                templateUrl: BASE_STATIC_URL + "/event/edit-event.html",
-                controller: 'CreateEventController',
-                data: {
-                    eventType: 'EXTERNAL'
                 }
             })
             .state('events.single', {
@@ -176,7 +214,7 @@
                 }
             })
             .state('events.single.reservationsList', {
-                url: '/reservations/',
+                url: '/reservations/?search',
                 template: '<reservations-list event="ctrl.event"></reservations-list>',
                 controller: function(getEvent) {
                     this.event = getEvent.data.event;
@@ -318,9 +356,18 @@
         });
     });
 
-    var validationResultHandler = function(form, deferred, $scope) {
+    var validationResultHandler = function(form, deferred, $scope, NotificationHandler) {
+
+        var errors = {
+            'error.coordinates': 'Event Geolocation is missing. Please check maps\' configuration.',
+            'error.beginDate': 'Please check Event\'s start/end date.',
+            'error.endDate': 'Please check Event\'s start/end date.',
+            'error.allowedpaymentproxies': 'Please select at least one payment method.'
+        };
+
         return function(validationResult) {
             if(validationResult.errorCount > 0) {
+                var errorText;
                 angular.forEach(validationResult.validationErrors, function(error) {
                     var match = error.fieldName.match(/ticketCategories\[([0-9]+)\]/);
                     if(match) {
@@ -331,7 +378,14 @@
                     if(angular.isFunction(form.$setError)) {
                         form.$setError(error.fieldName, error.code);
                     }
+                    if(errors[error.code]) {
+                        errorText = errors[error.code];
+                    }
                 });
+
+                if(errorText) {
+                    NotificationHandler.showError(errorText);
+                }
                 setTimeout(function() {
                     var firstInvalidElem = $("input.ng-invalid:first, textarea.input.ng-invalid:first, select.ng-invalid:first");
                     if(firstInvalidElem.length > 0) {
@@ -347,9 +401,9 @@
         };
     };
 
-    var validationPerformer = function($q, validator, data, form, $scope) {
+    var validationPerformer = function($q, validator, data, form, $scope, NotificationHandler) {
         var deferred = $q.defer();
-        validator(data).success(validationResultHandler(form, deferred, $scope)).error(function(error) {
+        validator(data).success(validationResultHandler(form, deferred, $scope, NotificationHandler)).error(function(error) {
             deferred.reject(error);
         });
         return deferred.promise;
@@ -431,10 +485,10 @@
                 $scope.allLanguagesMapping[r.value] = r;
                 locales |= r.value;
             });
-            if($scope.event && !angular.isDefined($scope.event.locales)) {
-                $scope.event.locales = locales;
-            }
         });
+        if($scope.event && !angular.isDefined($scope.event.locales)) {
+            $scope.event.locales = 0;
+        }
 
         EventService.getDynamicFieldTemplates().success(function(result) {
             $scope.dynamicFieldTemplates = result;
@@ -442,20 +496,28 @@
 
         OrganizationService.getAllOrganizations().success(function(result) {
             $scope.organizations = result;
+            if(result.length === 1) {
+                $scope.event.organizationId = result[0].id;
+                loadAllowedPaymentProxies(result[0].id);
+            }
         });
+
+        function loadAllowedPaymentProxies(orgId) {
+            PaymentProxyService.getAllProxies(orgId).success(function(result) {
+                $scope.allowedPaymentProxies = _.map(result, function(p) {
+                    return {
+                        id: p.paymentProxy,
+                        description: PAYMENT_PROXY_DESCRIPTIONS[p.paymentProxy] || 'Unknown provider ('+p.paymentProxy+')  Please check configuration',
+                        enabled: p.status === 'ACTIVE',
+                        onlyForCurrency: p.onlyForCurrency
+                    };
+                });
+            });
+        }
 
         $scope.$watch('event.organizationId', function(newVal) {
             if(newVal !== undefined && newVal !== null) {
-                PaymentProxyService.getAllProxies(newVal).success(function(result) {
-                    $scope.allowedPaymentProxies = _.map(result, function(p) {
-                        return {
-                            id: p.paymentProxy,
-                            description: PAYMENT_PROXY_DESCRIPTIONS[p.paymentProxy] || 'Unknown provider ('+p.paymentProxy+')  Please check configuration',
-                            enabled: p.status === 'ACTIVE',
-                            onlyForCurrency: p.onlyForCurrency
-                        };
-                    });
-                });
+                loadAllowedPaymentProxies(newVal)
             }
         });
 
@@ -532,7 +594,8 @@
 
     admin.controller('CreateEventController', function($scope, $state, $rootScope,
                                                        $q, OrganizationService, PaymentProxyService,
-                                                       EventService, LocationService, PAYMENT_PROXY_DESCRIPTIONS, TicketCategoryEditorService) {
+                                                       EventService, LocationService, PAYMENT_PROXY_DESCRIPTIONS, TicketCategoryEditorService,
+                                                       NotificationHandler) {
 
         var eventType = $state.$current.data.eventType;
 
@@ -593,8 +656,24 @@
         $scope.addCategory = function() {
             var category = createCategoryValidUntil(true, $scope.event.begin);
             editCategory(category).then(function(res) {
+                category.ordinal = $scope.event.ticketCategories.length + 1;
                 $scope.event.ticketCategories.push(category);
             });
+        };
+
+        $scope.swap = function(category, up) {
+            var list = $scope.event.ticketCategories.slice();
+            var index = category.ordinal - 1;
+            var target = up ? index - 1 : index + 1;
+            var toBeSwapped = list[target];
+            toBeSwapped.ordinal = index + 1;
+            category.ordinal = target + 1;
+            list[target] = category;
+            list[index] = toBeSwapped;
+            $scope.event.ticketCategories.length = 0;
+            for(var i=0; i<list.length; i++) {
+                $scope.event.ticketCategories.push(list[i]);
+            }
         };
 
         $scope.setAdditionalServices = function(event, additionalServices) {
@@ -611,7 +690,7 @@
         };
 
         $scope.save = function(form, event) {
-            validationPerformer($q, EventService.checkEvent, event, form, $scope).then(function() {
+            validationPerformer($q, EventService.checkEvent, event, form, $scope, NotificationHandler).then(function() {
                 EventService.createEvent(event).success(function() {
                     if(window.sessionStorage) {
                         delete window.sessionStorage.new_event;
@@ -631,16 +710,28 @@
             }
         }, true);
 
-        $scope.calcDynamicTickets = function(eventSeats, categories) {
+        var calcDynamicTickets = function(eventSeats, categories) {
             var value = 0;
             if(eventSeats) {
                 value = eventSeats - _.chain(categories).filter('bounded').reduce(function(sum, c) {
-                        return sum + (c.maxTickets || 0);
-                    }, 0).value();
-
+                    return sum + (c.maxTickets || 0);
+                }, 0).value();
             }
             return value;
-        }
+        };
+
+        $scope.calcDynamicTickets = calcDynamicTickets;
+
+        $scope.allDynamicCategories = function(eventSeats, categories) {
+            var dynamic = _.filter(categories, function(cat) { return !cat.bounded; });
+            if(dynamic.length > 1 && dynamic.length === categories.length) {
+                return "All Categories";
+            } else if(dynamic.length > 1 && (calcDynamicTickets(eventSeats, categories) / eventSeats * 100.0) < 25) {
+                return "Dynamic";
+            }
+            return _.map(dynamic, 'name').join(', ');
+        };
+
 
     });
 
@@ -660,7 +751,8 @@
                                                         UtilsService,
                                                         NotificationHandler,
                                                         $timeout,
-                                                        TicketCategoryEditorService) {
+                                                        TicketCategoryEditorService,
+                                                        GroupService) {
         var loadData = function() {
             $scope.loading = true;
 
@@ -702,6 +794,12 @@
                         loadData();
                     });
                 };
+                $scope.toggleRearrange = function() {
+                    var event = $scope.event;
+                    EventService.rearrangeCategories(event).then(function() {
+                        loadData();
+                    })
+                };
             });
         };
         $scope.baseUrl = window.location.origin;
@@ -712,6 +810,26 @@
                 expired: $scope.event.ticketCategories.filter(function(tc) { return tc.containingOrphans; }).length > 0,
                 freeText: ''
             };
+            $q.all([GroupService.loadActiveLinks($state.params.eventName), GroupService.loadGroups($scope.event.organizationId)])
+                .then(function(results) {
+                    var confResult = results[0];
+                    var lists = results[1].data;
+                    if(confResult.status === 200) {
+                        _.forEach(confResult.data, function(list) {
+                            var group = _.find(lists, function(l) { return l.id === list.groupId});
+                            list.groupName = group ? group.name : "";
+                            if(list.ticketCategoryId != null) {
+                                var category = _.find($scope.event.ticketCategories, function(c) { return c.id === list.ticketCategoryId;});
+                                if(category) {
+                                    category.attendeesList = list;
+                                }
+                            } else {
+                                $scope.event.attendeesList = list;
+                            }
+                        });
+                    }
+
+                });
         });
         $scope.allocationStrategyRadioClass = 'radio';
         $scope.evaluateCategoryStatusClass = function(index, category) {
@@ -757,6 +875,18 @@
 
         $scope.isReady = function(token) {
             return token.status === 'WAITING';
+        };
+
+        $scope.canBeDeleted = function(category) {
+            return category.checkedInTickets + category.soldTickets + category.pendingTickets === 0
+        };
+
+        $scope.deleteCategory = function(category, event) {
+            EventService.deleteCategory(category, event).then(function(result) {
+                if(result === 'OK') {
+                    loadData();
+                }
+            });
         };
 
         $scope.moveOrphans = function(srcCategory, targetCategoryId, eventId) {
@@ -988,38 +1118,6 @@
             });
         };
 
-        var getPendingPayments = function() {
-            EventService.getPendingPayments($stateParams.eventName).success(function(data) {
-                $scope.pendingReservations = data;
-            });
-        };
-
-        $scope.registerPayment = function(eventName, id) {
-            $scope.loading = true;
-            EventService.registerPayment(eventName, id).success(function() {
-                loadData().then(function(res) {
-                    if(res.data.event.visibleForCurrentUser) {
-                        getPendingPayments();
-                    }
-                });
-            }).error(function() {
-                $scope.loading = false;
-            });
-        };
-        $scope.deletePayment = function(eventName, id) {
-            $scope.loading = true;
-            EventService.cancelPayment(eventName, id).success(function() {
-                loadData().then(function(res) {
-                    if(res.data.event.visibleForCurrentUser) {
-                        getPendingPayments();
-                    }
-                });
-            }).error(function() {
-                $scope.loading = false;
-            });
-        };
-        
-        //
 
         $scope.countActive = function(categories) {
             return _.countBy(categories, 'expired')['false'] || '0';
@@ -1035,7 +1133,11 @@
         };
 
         $scope.downloadSponsorsScan = function() {
-            $window.open($window.location.pathname+"/api/events/"+parentScope.event.shortName+"/sponsor-scan/export.csv");
+            var pathName = $window.location.pathname;
+            if(!pathName.endsWith("/")) {
+                pathName = pathName + "/";
+            }
+            $window.open(pathName+"api/events/"+parentScope.event.shortName+"/sponsor-scan/export");
         };
 
         $scope.activateEvent = function(id) {
@@ -1141,12 +1243,13 @@
 
         $scope.selection = {};
         $scope.checkedInSelection = {};
-        $scope.itemsPerPage = 20;
+        $scope.itemsPerPage = 10;
         $scope.currentPage = 1;
         $scope.currentPageCheckedIn = 1;
         $scope.advancedSearch = {};
         $scope.tickets = [];
         $scope.checkedInTickets = [];
+        $scope.showAlert = true;
 
         var db = new Dexie('AlfioDatabase', {autoOpen: false});
         db.version(1).stores({
@@ -1170,6 +1273,10 @@
 
         $scope.goToScanPage = function() {
             $state.go('events.single.checkInScan', $stateParams);
+        };
+
+        $scope.hideAlert = function() {
+            $scope.showAlert = false;
         };
 
         EventService.getEvent($stateParams.eventName).success(function(result) {
@@ -1343,14 +1450,14 @@
             var eventId = $scope.event.id;
             var query = $scope.selection.freeText;
             var pageNotCheckedIn = $scope.currentPage;
-            var offsetNotCheckedIn = query ? 0 : $scope.itemsPerPage * (pageNotCheckedIn - 1);
+            var offsetNotCheckedIn = $scope.itemsPerPage * (pageNotCheckedIn - 1);
 
             var pageCheckedIn = $scope.currentPageCheckedIn;
-            var offsetCheckedIn = query ? 0 : $scope.itemsPerPage * (pageCheckedIn - 1);
+            var offsetCheckedIn = $scope.itemsPerPage * (pageCheckedIn - 1);
 
             var filter = function(ticket) {
                 return ticket.eventId === eventId && (!query || query === '' ||
-                    ([ticket.fullName, ticket.email, ticket.ticketCategory.name, ticket.uuid, ticket.ticketsReservationId].join('/')).toLowerCase().indexOf(query.toLowerCase()) > -1);
+                    ([ticket.fullName, ticket.email, ticket.ticketCategory.name, ticket.uuid, ticket.ticketsReservationId, ticket.extReference].join('/')).toLowerCase().indexOf(query.toLowerCase()) > -1);
             };
 
             var deferred1 = $q.defer();
@@ -1597,20 +1704,50 @@
         });
     });
 
-    admin.controller('PendingPaymentsController', function($scope, EventService, $stateParams, $log, $window) {
+    admin.controller('PendingPaymentsController', function($scope, EventService, $stateParams, $log, $window, $uibModal, ReservationIdentifierConfiguration) {
 
         EventService.getEvent($stateParams.eventName).then(function(result) {
             $scope.event = result.data.event;
+            getPendingPayments();
         });
 
         var getPendingPayments = function(force) {
             EventService.getPendingPayments($stateParams.eventName, force).success(function(data) {
-                $scope.pendingReservations = data;
+                var pendingReservations = data.map(function(pending) {
+                    ReservationIdentifierConfiguration.getReservationIdentifier($scope.event.id, pending.ticketReservation, false).then(function(result) {
+                        pending.publicId = result;
+                    });
+                    return pending;
+                });
+                $scope.pendingReservations = pendingReservations;
+                $scope.orderByFieldDesc = {};
+
+                $scope.changeSorting = function(field) {
+                    $scope.orderByField = field;
+                    var sortDesc = false;
+                    if(angular.isDefined($scope.orderByFieldDesc[field])) {
+                        sortDesc = !$scope.orderByFieldDesc[field];
+                    }
+                    $scope.orderByFieldDesc[field]=sortDesc;
+                    var sorted = _.sortBy(pendingReservations, field);
+                    if(sortDesc) {
+                        sorted = _(sorted).reverse().value()
+                    }
+                    $scope.pendingReservations = sorted;
+                };
+
+                $scope.sortingIndicator = function(field) {
+                    if($scope.orderByField === field) {
+                        return $scope.orderByFieldDesc[field] ? 'fa-sort-desc' : 'fa-sort-asc';
+                    }
+                    return '';
+                };
                 $scope.loading = false;
             });
         };
 
-        $scope.eventName = $stateParams.eventName;
+        var eventName = $stateParams.eventName;
+        $scope.eventName = eventName;
         $scope.uploadSuccess = function(data) {
             $scope.results = data;
             getPendingPayments();
@@ -1618,7 +1755,6 @@
 
         $scope.uploadUrl = '/admin/api/events/'+$stateParams.eventName+'/pending-payments/bulk-confirmation';
 
-        getPendingPayments();
         $scope.registerPayment = function(eventName, id) {
             $scope.loading = true;
             EventService.registerPayment(eventName, id).success(function() {
@@ -1627,14 +1763,68 @@
                 $scope.loading = false;
             });
         };
-        $scope.deletePayment = function(eventName, id) {
-            if(!$window.confirm('Do you really want to delete this reservation?')) {
-                return;
-            }
-            $scope.loading = true;
-            EventService.cancelPayment(eventName, id).success(function() {
+
+        $scope.showTransactionDialog = function(pendingPaymentDescriptor) {
+            $uibModal.open({
+                size:'md',
+                templateUrl:BASE_STATIC_URL + '/pending-payments/show-transaction-modal.html',
+                backdrop: 'static',
+                controller: function($scope) {
+                    var ctrl = this;
+                    ctrl.paymentInfo = pendingPaymentDescriptor;
+                    ctrl.reservationId = pendingPaymentDescriptor.ticketReservation.id;
+                    ctrl.cancel = function() {
+                        $scope.$dismiss('cancelled');
+                    };
+                    ctrl.confirm = function() {
+                        $scope.$close('CONFIRM');
+                    };
+                    ctrl.discardPayment = function() {
+                        $scope.$close('DISCARD');
+                    };
+                },
+                controllerAs: '$ctrl'
+            }).result.then(function(command) {
+                if(command === 'CONFIRM') {
+                    $scope.loading = true;
+                    return EventService.registerPayment(eventName, pendingPaymentDescriptor.ticketReservation.id);
+                } else if (command === 'DISCARD') {
+                    $scope.loading = true;
+                    return EventService.cancelMatchingPayment(eventName, pendingPaymentDescriptor.ticketReservation.id, pendingPaymentDescriptor.transaction.id);
+                }
+                return null;
+            }).then(function() {
                 getPendingPayments(true);
-            }).error(function() {
+            }, function() {
+                $scope.loading = false;
+            });
+        };
+
+        $scope.deletePayment = function(eventName, id, credit) {
+            var action = credit ? "credit" : "cancel";
+            var confirmPromise = $uibModal.open({
+                size:'md',
+                templateUrl:BASE_STATIC_URL + '/pending-payments/delete-or-credit-modal.html',
+                backdrop: 'static',
+                controller: function($scope) {
+                    var ctrl = this;
+                    ctrl.credit = credit;
+                    ctrl.reservationId = id;
+                    ctrl.cancel = function() {
+                        $scope.$dismiss('canceled');
+                    };
+                    ctrl.confirm = function() {
+                        $scope.$close(true);
+                    };
+                },
+                controllerAs: '$ctrl'
+            }).result;
+
+            confirmPromise.then(function() {
+                return EventService.cancelPayment(eventName, id, credit);
+            }).then(function() {
+                getPendingPayments(true);
+            }, function() {
                 $scope.loading = false;
             });
         };
@@ -1804,5 +1994,18 @@
 
         $rootScope.calculateTotalPrice = PriceCalculator.calculateTotalPrice;
     });
+
+    admin.component('countryName', {
+        bindings: {
+            code: '<'
+        },
+        controller: ['CountriesService', function (CountriesService) {
+            var ctrl = this;
+            CountriesService.getDescription(this.code).then(function (countryName) {
+                ctrl.countryName = countryName;
+            })
+        }],
+        template: '<span>{{$ctrl.countryName}}</span>'
+    })
 
 })();

@@ -17,19 +17,19 @@
 package alfio.manager;
 
 import alfio.manager.i18n.I18nManager;
-import alfio.model.ContentLanguage;
-import alfio.model.Event;
-import alfio.model.SpecialPrice;
-import alfio.model.TicketCategory;
+import alfio.manager.i18n.MessageSourceManager;
+import alfio.manager.system.ConfigurationLevel;
+import alfio.manager.system.ConfigurationManager;
+import alfio.model.*;
 import alfio.model.modification.SendCodeModification;
 import alfio.model.user.Organization;
 import alfio.repository.SpecialPriceRepository;
+import alfio.util.LocaleUtil;
 import alfio.util.TemplateManager;
 import alfio.util.TemplateResource;
+import lombok.AllArgsConstructor;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Validate;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.MessageSource;
 import org.springframework.stereotype.Component;
 
 import java.time.ZonedDateTime;
@@ -37,9 +37,11 @@ import java.util.*;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 
+import static alfio.model.system.ConfigurationKeys.USE_PARTNER_CODE_INSTEAD_OF_PROMOTIONAL;
 import static java.util.stream.Collectors.toList;
 
 @Component
+@AllArgsConstructor
 public class SpecialPriceManager {
 
     private static final Predicate<SendCodeModification> IS_CODE_PRESENT = v -> Optional.ofNullable(v.getCode()).isPresent();
@@ -47,38 +49,24 @@ public class SpecialPriceManager {
     private final NotificationManager notificationManager;
     private final SpecialPriceRepository specialPriceRepository;
     private final TemplateManager templateManager;
-    private final MessageSource messageSource;
+    private final MessageSourceManager messageSourceManager;
     private final I18nManager i18nManager;
+    private final ConfigurationManager configurationManager;
 
-    @Autowired
-    public SpecialPriceManager(EventManager eventManager,
-                               NotificationManager notificationManager,
-                               SpecialPriceRepository specialPriceRepository,
-                               TemplateManager templateManager,
-                               MessageSource messageSource,
-                               I18nManager i18nManager) {
-        this.eventManager = eventManager;
-        this.notificationManager = notificationManager;
-        this.specialPriceRepository = specialPriceRepository;
-        this.templateManager = templateManager;
-        this.messageSource = messageSource;
-        this.i18nManager = i18nManager;
-    }
-
-    private List<String> checkCodeAssignment(Set<SendCodeModification> input, int categoryId, Event event, String username) {
+    private List<String> checkCodeAssignment(Set<SendCodeModification> input, int categoryId, EventAndOrganizationId event, String username) {
         final TicketCategory category = checkOwnership(categoryId, event, username);
-        List<String> availableCodes = new ArrayList<>(specialPriceRepository.findActiveByCategoryId(category.getId())
+        List<String> availableCodes = specialPriceRepository.findActiveByCategoryId(category.getId())
             .stream()
             .filter(SpecialPrice::notSent)
-            .map(SpecialPrice::getCode).collect(toList()));
+            .map(SpecialPrice::getCode).collect(toList());
         Validate.isTrue(input.size() <= availableCodes.size(), "Requested codes: "+input.size()+ ", available: "+availableCodes.size()+".");
         List<String> requestedCodes = input.stream().filter(IS_CODE_PRESENT).map(SendCodeModification::getCode).collect(toList());
         Validate.isTrue(requestedCodes.stream().distinct().count() == requestedCodes.size(), "Cannot assign the same code twice. Please fix the input file.");
-        Validate.isTrue(requestedCodes.stream().allMatch(availableCodes::contains), "some requested codes don't exist.");
+        Validate.isTrue(availableCodes.containsAll(requestedCodes), "some requested codes don't exist.");
         return availableCodes;
     }
 
-    private TicketCategory checkOwnership(int categoryId, Event event, String username) {
+    private TicketCategory checkOwnership(int categoryId, EventAndOrganizationId event, String username) {
         eventManager.checkOwnership(event, username, event.getOrganizationId());
         final List<TicketCategory> categories = eventManager.loadTicketCategories(event);
         final TicketCategory category = categories.stream().filter(tc -> tc.getId() == categoryId).findFirst().orElseThrow(IllegalArgumentException::new);
@@ -87,7 +75,7 @@ public class SpecialPriceManager {
     }
 
     public List<SendCodeModification> linkAssigneeToCode(List<SendCodeModification> input, String eventName, int categoryId, String username) {
-        final Event event = eventManager.getSingleEvent(eventName, username);
+        final EventAndOrganizationId event = eventManager.getEventAndOrganizationId(eventName, username);
         Set<SendCodeModification> set = new LinkedHashSet<>(input);
         List<String> availableCodes = checkCodeAssignment(set, categoryId, event, username);
         final Iterator<String> codes = availableCodes.iterator();
@@ -97,14 +85,14 @@ public class SpecialPriceManager {
     }
 
     public List<SpecialPrice> loadSentCodes(String eventName, int categoryId, String username) {
-        final Event event = eventManager.getSingleEvent(eventName, username);
+        final EventAndOrganizationId event = eventManager.getEventAndOrganizationId(eventName, username);
         checkOwnership(categoryId, event, username);
         Predicate<SpecialPrice> p = SpecialPrice::notSent;
         return specialPriceRepository.findAllByCategoryId(categoryId).stream().filter(p.negate()).collect(toList());
     }
 
     public boolean clearRecipientData(String eventName, int categoryId, int codeId, String username) {
-        final Event event = eventManager.getSingleEvent(eventName, username);
+        final EventAndOrganizationId event = eventManager.getEventAndOrganizationId(eventName, username);
         checkOwnership(categoryId, event, username);
         int result = specialPriceRepository.clearRecipientData(codeId, categoryId);
         Validate.isTrue(result <= 1, "too many records affected");
@@ -121,9 +109,16 @@ public class SpecialPriceManager {
         Validate.isTrue(!eventLanguages.isEmpty(), "No locales have been defined for the event. Please check the configuration");
         ContentLanguage defaultLocale = eventLanguages.contains(ContentLanguage.ENGLISH) ? ContentLanguage.ENGLISH : eventLanguages.get(0);
         set.forEach(m -> {
-            Locale locale = Locale.forLanguageTag(StringUtils.defaultString(StringUtils.trimToNull(m.getLanguage()), defaultLocale.getLanguage()));
-            Map<String, Object> model = TemplateResource.prepareModelForSendReservedCode(organization, event, m, eventManager.getEventUrl(event));
-            notificationManager.sendSimpleEmail(event, m.getEmail(), messageSource.getMessage("email-code.subject", new Object[] {event.getDisplayName()}, locale), () -> templateManager.renderTemplate(event, TemplateResource.SEND_RESERVED_CODE, model, locale));
+            var messageSource = messageSourceManager.getMessageSourceForEvent(event);
+            Locale locale = LocaleUtil.forLanguageTag(StringUtils.defaultString(StringUtils.trimToNull(m.getLanguage()), defaultLocale.getLanguage()));
+            var usePartnerCode = configurationManager.getFor(USE_PARTNER_CODE_INSTEAD_OF_PROMOTIONAL, ConfigurationLevel.event(event)).getValueAsBooleanOrDefault(false);
+            var promoCodeDescription = messageSource.getMessage("show-event.promo-code-type."+(usePartnerCode ? "partner" : "promotional"), null, null, locale);
+            Map<String, Object> model = TemplateResource.prepareModelForSendReservedCode(organization, event, m, eventManager.getEventUrl(event), promoCodeDescription);
+            notificationManager.sendSimpleEmail(event,
+                null,
+                m.getEmail(),
+                messageSource.getMessage("email-code.subject", new Object[] {event.getDisplayName(), promoCodeDescription}, locale),
+                () -> templateManager.renderTemplate(event, TemplateResource.SEND_RESERVED_CODE, model, locale));
             int marked = specialPriceRepository.markAsSent(ZonedDateTime.now(event.getZoneId()), m.getAssignee().trim(), m.getEmail().trim(), m.getCode().trim());
             Validate.isTrue(marked == 1, "Expected exactly one row updated, got "+marked);
         });

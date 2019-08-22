@@ -16,8 +16,7 @@
  */
 package alfio.manager.system;
 
-import alfio.model.Event;
-import alfio.model.system.Configuration;
+import alfio.model.EventAndOrganizationId;
 import lombok.AllArgsConstructor;
 import lombok.extern.log4j.Log4j2;
 import okhttp3.*;
@@ -28,6 +27,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import static alfio.model.system.ConfigurationKeys.*;
 
@@ -39,11 +39,9 @@ class MailgunMailer implements Mailer {
     private final ConfigurationManager configurationManager;
 
     
-    private RequestBody prepareBody(Event event, String to, List<String> cc, String subject, String text,
-                                    Optional<String> html, Attachment... attachments)
-            throws IOException {
+    private static RequestBody prepareBody(String from, String to, String replyTo, List<String> cc, String subject, String text,
+                                    Optional<String> html, Attachment... attachments) {
 
-        String from = event.getDisplayName() + " <" + configurationManager.getRequiredValue(Configuration.from(event.getOrganizationId(), event.getId(), MAILGUN_FROM)) +">";
 
         if (ArrayUtils.isEmpty(attachments)) {
             FormBody.Builder builder = new FormBody.Builder()
@@ -55,11 +53,10 @@ class MailgunMailer implements Mailer {
                 builder.add("cc", StringUtils.join(cc, ','));
             }
 
-            String replyTo = configurationManager.getStringConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), MAIL_REPLY_TO), "");
             if(StringUtils.isNotBlank(replyTo)) {
                 builder.add("h:Reply-To", replyTo);
             }
-            html.ifPresent((htmlContent) -> builder.add("html", htmlContent));
+            html.ifPresent(htmlContent -> builder.add("html", htmlContent));
             return builder.build();
 
         } else {
@@ -75,8 +72,7 @@ class MailgunMailer implements Mailer {
                 multipartBuilder.addFormDataPart("cc", StringUtils.join(cc, ','));
             }
 
-            html.ifPresent((htmlContent) -> multipartBuilder.addFormDataPart(
-                    "html", htmlContent));
+            html.ifPresent(htmlContent -> multipartBuilder.addFormDataPart("html", htmlContent));
 
             for (Attachment attachment : attachments) {
                 byte[] data = attachment.getSource();
@@ -89,28 +85,34 @@ class MailgunMailer implements Mailer {
     }
 
     @Override
-    public void send(Event event, String to, List<String> cc, String subject, String text,
+    public void send(EventAndOrganizationId event, String fromName, String to, List<String> cc, String subject, String text,
                      Optional<String> html, Attachment... attachment) {
 
-        String apiKey = configurationManager.getRequiredValue(Configuration.from(event.getOrganizationId(), event.getId(), MAILGUN_KEY));
-        String domain = configurationManager.getRequiredValue(Configuration.from(event.getOrganizationId(), event.getId(), MAILGUN_DOMAIN));
+        var conf = configurationManager.getFor(Set.of(MAILGUN_KEY, MAILGUN_DOMAIN, MAILGUN_EU, MAILGUN_FROM, MAIL_REPLY_TO), ConfigurationLevel.event(event));
 
+        String apiKey = conf.get(MAILGUN_KEY).getRequiredValue();
+        String domain = conf.get(MAILGUN_DOMAIN).getRequiredValue();
+        boolean useEU = conf.get(MAILGUN_EU).getValueAsBooleanOrDefault(false);
+
+        String baseUrl = useEU ? "https://api.eu.mailgun.net/v3/" : "https://api.mailgun.net/v3/";
         try {
 
-            RequestBody formBody = prepareBody(event, to, cc, subject, text, html,
-                    attachment);
+            var from = fromName + " <" + conf.get(MAILGUN_FROM).getRequiredValue() +">";
+
+            var replyTo = conf.get(MAIL_REPLY_TO).getValueOrDefault("");
+
+            RequestBody formBody = prepareBody(from, to, replyTo, cc, subject, text, html, attachment);
 
             Request request = new Request.Builder()
-                    .url("https://api.mailgun.net/v2/" + domain + "/messages")
+                    .url(baseUrl + domain + "/messages")
                     .header("Authorization", Credentials.basic("api", apiKey))
                     .post(formBody).build();
 
-            Response resp = client.newCall(request).execute();
-            if (!resp.isSuccessful()) {
-                log.warn("sending email was not successful:" + resp);
-            } else {
-                //close response body, in order to prevent leaks
-                resp.body().close();
+            try(Response resp = client.newCall(request).execute()) {
+                if (!resp.isSuccessful()) {
+                    log.warn("sending email was not successful:" + resp);
+                    throw new IllegalStateException("Attempt to send a message failed. Result is: "+resp.code());
+                }
             }
         } catch (IOException e) {
             log.warn("error while sending email", e);

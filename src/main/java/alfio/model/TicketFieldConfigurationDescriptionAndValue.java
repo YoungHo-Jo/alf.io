@@ -19,10 +19,12 @@ package alfio.model;
 import alfio.util.Json;
 import com.fasterxml.jackson.core.type.TypeReference;
 import lombok.AllArgsConstructor;
+import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.experimental.Delegate;
+import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.commons.lang3.tuple.Pair;
+import org.apache.commons.lang3.tuple.Triple;
 
 import java.util.Collections;
 import java.util.List;
@@ -41,11 +43,11 @@ public class TicketFieldConfigurationDescriptionAndValue {
     private final String value;
 
 
-    public List<Pair<String, String>> getTranslatedRestrictedValue() {
+    public List<Triple<String, String, Boolean>> getTranslatedRestrictedValue() {
         Map<String, String> description = ticketFieldDescription.getRestrictedValuesDescription();
         return ticketFieldConfiguration.getRestrictedValues()
             .stream()
-            .map(val -> Pair.of(val, description.getOrDefault(val, "MISSING_DESCRIPTION")))
+            .map(val -> Triple.of(val, description.getOrDefault(val, "MISSING_DESCRIPTION"), isFieldValueEnabled(ticketFieldConfiguration, val)))
             .collect(Collectors.toList());
     }
 
@@ -60,8 +62,35 @@ public class TicketFieldConfigurationDescriptionAndValue {
 
     }
 
+    public String getValueDescription() {
+        if(isSelectField()) {
+            return getTranslatedRestrictedValue().stream()
+                .filter(t -> StringUtils.equals(t.getLeft(), value))
+                .map(Triple::getMiddle)
+                .findFirst()
+                .orElse("");
+        } else {
+            return value;
+        }
+    }
+
+    public String getValue() {
+        return value;
+    }
+
+    public boolean isBeforeStandardFields() {
+        return getOrder() < 0;
+    }
+
+    private static boolean isFieldValueEnabled(TicketFieldConfiguration ticketFieldConfiguration, String value) {
+        return !ticketFieldConfiguration.isSelectField()
+            || CollectionUtils.isEmpty(ticketFieldConfiguration.getDisabledValues())
+            || !ticketFieldConfiguration.getDisabledValues().contains(value);
+    }
+
     @RequiredArgsConstructor
-    private static class TicketFieldValue {
+    @Getter
+    public static class TicketFieldValue {
         private final int fieldIndex;
         private final int fieldCounter;
         private final String fieldValue;

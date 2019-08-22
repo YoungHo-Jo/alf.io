@@ -33,32 +33,46 @@ public class SpecialPrice {
     private final int priceInCents;
     private final int ticketCategoryId;
     private final Status status;
-    private final String sessionIdentifier;
     private final ZonedDateTime sentTimestamp;
     private final String recipientName;
     private final String recipientEmail;
+    private final Integer accessCodeId;
 
     public SpecialPrice(@Column("id") int id,
                         @Column("code") String code,
                         @Column("price_cts") int priceInCents,
                         @Column("ticket_category_id") int ticketCategoryId,
                         @Column("status") String status,
-                        @Column("session_id") String sessionIdentifier,
                         @Column("sent_ts") ZonedDateTime sentTimestamp,
                         @Column("recipient_name") String recipientName,
-                        @Column("recipient_email") String recipientEmail) {
+                        @Column("recipient_email") String recipientEmail,
+                        @Column("access_code_id_fk") Integer accessCodeId) {
         this.id = id;
         this.code = code;
         this.priceInCents = priceInCents;
         this.ticketCategoryId = ticketCategoryId;
         this.status = Status.valueOf(status);
-        this.sessionIdentifier = sessionIdentifier;
         this.sentTimestamp = sentTimestamp;
         this.recipientName = recipientName;
         this.recipientEmail = recipientEmail;
+        this.accessCodeId = accessCodeId;
     }
 
     public boolean notSent() {
         return sentTimestamp == null;
+    }
+
+
+    @Getter
+    public static class SpecialPriceTicketCategoryId {
+        private final int id;
+        private final int ticketCategoryId;
+
+
+        public SpecialPriceTicketCategoryId(@Column("id") int id,
+                                            @Column("ticket_category_id") int ticketCategoryId) {
+            this.id = id;
+            this.ticketCategoryId = ticketCategoryId;
+        }
     }
 }

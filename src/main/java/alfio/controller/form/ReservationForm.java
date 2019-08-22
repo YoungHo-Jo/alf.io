@@ -27,9 +27,7 @@ import alfio.model.modification.ASReservationWithOptionalCodeModification;
 import alfio.model.modification.AdditionalServiceReservationModification;
 import alfio.model.modification.TicketReservationModification;
 import alfio.model.modification.TicketReservationWithOptionalCodeModification;
-import alfio.repository.AdditionalServiceRepository;
 import alfio.util.ErrorsCode;
-import alfio.util.OptionalWrapper;
 import lombok.Data;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
@@ -54,13 +52,14 @@ public class ReservationForm implements Serializable {
     private String promoCode;
     private List<TicketReservationModification> reservation;
     private List<AdditionalServiceReservationModification> additionalService;
+    private String captcha;
 
     private List<TicketReservationModification> selected() {
         return ofNullable(reservation)
                 .orElse(emptyList())
                 .stream()
-                .filter((e) -> e != null && e.getAmount() != null && e.getTicketCategoryId() != null
-                        && e.getAmount() > 0).collect(toList());
+                .filter(e -> e != null && e.getAmount() != null && e.getTicketCategoryId() != null && e.getAmount() > 0)
+                .collect(toList());
     }
 
     private List<AdditionalServiceReservationModification> selectedAdditionalServices() {
@@ -75,15 +74,8 @@ public class ReservationForm implements Serializable {
         return selected().stream().mapToInt(TicketReservationModification::getAmount).sum();
     }
 
-    private int additionalServicesSelectionCount(AdditionalServiceRepository additionalServiceRepository, int eventId) {
-        return (int) selectedAdditionalServices().stream()
-            .filter(as -> as.getAdditionalServiceId() != null && (additionalServiceRepository.getById(as.getAdditionalServiceId(), eventId).isFixPrice() || Optional.ofNullable(as.getAmount()).filter(a -> a.compareTo(BigDecimal.ZERO) > 0).isPresent()))
-            .count();
-    }
-
     public Optional<Pair<List<TicketReservationWithOptionalCodeModification>, List<ASReservationWithOptionalCodeModification>>> validate(Errors bindingResult,
                                                                                                                                          TicketReservationManager tickReservationManager,
-                                                                                                                                         AdditionalServiceRepository additionalServiceRepository,
                                                                                                                                          EventManager eventManager,
                                                                                                                                          Event event) {
         int selectionCount = ticketSelectionCount();
@@ -94,7 +86,7 @@ public class ReservationForm implements Serializable {
         }
 
         List<Pair<TicketReservationModification, Integer>> maxTicketsByTicketReservation = selected().stream()
-            .map(r -> Pair.of(r, tickReservationManager.maxAmountOfTicketsForCategory(event.getOrganizationId(), event.getId(), r.getTicketCategoryId())))
+            .map(r -> Pair.of(r, tickReservationManager.maxAmountOfTicketsForCategory(event, r.getTicketCategoryId())))
             .collect(toList());
         Optional<Pair<TicketReservationModification, Integer>> error = maxTicketsByTicketReservation.stream()
             .filter(p -> p.getKey().getAmount() > p.getValue())
@@ -110,7 +102,7 @@ public class ReservationForm implements Serializable {
 
         final boolean validCategorySelection = categories.stream().allMatch(c -> {
             TicketCategory tc = eventManager.getTicketCategoryById(c.getTicketCategoryId(), event.getId());
-            return OptionalWrapper.optionally(() -> eventManager.findEventByTicketCategory(tc)).isPresent();
+            return eventManager.eventExistsById(tc.getEventId());
         });
 
 
@@ -121,7 +113,7 @@ public class ReservationForm implements Serializable {
                 as.getExpiration(event.getZoneId()).isAfter(now) &&
                 asm.getQuantity() >= 0 &&
                 ((as.isFixPrice() && asm.isQuantityValid(as, selectionCount)) || (!as.isFixPrice() && asm.getAmount() != null && asm.getAmount().compareTo(BigDecimal.ZERO) >= 0)) &&
-                OptionalWrapper.optionally(() -> eventManager.findEventByAdditionalService(as)).isPresent();
+                eventManager.eventExistsById(as.getEventId());
         });
 
         if(!validCategorySelection || !validAdditionalServiceSelected) {
@@ -131,11 +123,11 @@ public class ReservationForm implements Serializable {
 
         List<TicketReservationWithOptionalCodeModification> res = new ArrayList<>();
         //
-        Optional<SpecialPrice> specialCode = Optional.ofNullable(StringUtils.trimToNull(promoCode)).flatMap(
-                (trimmedCode) -> tickReservationManager.getSpecialPriceByCode(trimmedCode));
+        Optional<SpecialPrice> specialCode = Optional.ofNullable(StringUtils.trimToNull(promoCode))
+            .flatMap(tickReservationManager::getSpecialPriceByCode);
         //
         final ZonedDateTime now = ZonedDateTime.now(event.getZoneId());
-        maxTicketsByTicketReservation.forEach((pair) -> validateCategory(bindingResult, tickReservationManager, eventManager, event, pair.getRight(), res, specialCode, now, pair.getLeft()));
+        maxTicketsByTicketReservation.forEach(pair -> validateCategory(bindingResult, tickReservationManager, eventManager, event, pair.getRight(), res, specialCode, now, pair.getLeft()));
         return bindingResult.hasErrors() ? Optional.empty() : Optional.of(Pair.of(res, additionalServices.stream().map(as -> new ASReservationWithOptionalCodeModification(as, specialCode)).collect(Collectors.toList())));
     }
 
@@ -143,7 +135,7 @@ public class ReservationForm implements Serializable {
                                          Event event, int maxAmountOfTicket, List<TicketReservationWithOptionalCodeModification> res,
                                          Optional<SpecialPrice> specialCode, ZonedDateTime now, TicketReservationModification r) {
         TicketCategory tc = eventManager.getTicketCategoryById(r.getTicketCategoryId(), event.getId());
-        SaleableTicketCategory ticketCategory = new SaleableTicketCategory(tc, "", now, event, tickReservationManager.countAvailableTickets(event, tc), maxAmountOfTicket, null);
+        SaleableTicketCategory ticketCategory = new SaleableTicketCategory(tc, now, event, tickReservationManager.countAvailableTickets(event, tc), maxAmountOfTicket, null);
 
         if (!ticketCategory.getSaleable()) {
             bindingResult.reject(ErrorsCode.STEP_1_TICKET_CATEGORY_MUST_BE_SALEABLE);

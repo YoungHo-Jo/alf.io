@@ -20,19 +20,18 @@ import alfio.model.Event;
 import alfio.model.PriceContainer;
 import alfio.model.PromoCodeDiscount;
 import alfio.model.TicketCategory;
+import alfio.util.MonetaryUtil;
 import lombok.experimental.Delegate;
 
 import java.math.BigDecimal;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.Optional;
 
 public class SaleableTicketCategory implements PriceContainer {
 
     @Delegate
     private final TicketCategory ticketCategory;
-    private final String description;
     private final ZonedDateTime now;
     private final ZoneId zoneId;
     private final Event event;
@@ -43,14 +42,12 @@ public class SaleableTicketCategory implements PriceContainer {
     private final PromoCodeDiscount promoCodeDiscount;
 
     public SaleableTicketCategory(TicketCategory ticketCategory,
-                                  String description,
                                   ZonedDateTime now,
                                   Event event,
                                   int availableTickets,
                                   int maxTickets,
                                   PromoCodeDiscount promoCodeDiscount) {
         this.ticketCategory = ticketCategory;
-        this.description = description;
         this.now = now;
         this.zoneId = event.getZoneId();
         this.event = event;
@@ -69,6 +66,10 @@ public class SaleableTicketCategory implements PriceContainer {
         return inSale && !soldOut;
     }
 
+    public boolean getSaleableAndLimitNotReached() {
+        return getSaleable() && (promoCodeDiscount == null || maxTickets > 0);
+    }
+
     public boolean getExpired() {
         return getExpiration(zoneId).isBefore(now);
     }
@@ -81,15 +82,11 @@ public class SaleableTicketCategory implements PriceContainer {
     public boolean getAccessRestricted() {
         return isAccessRestricted();
     }
-    
-    public boolean getSouldOut() {
-        return soldOut;
+
+    public boolean getSouldOutOrLimitReached() {
+        return soldOut || (promoCodeDiscount != null && maxTickets == 0);
     }
 
-    public String getFormattedExpiration() {
-        return getExpiration(zoneId).format(DateTimeFormatter.ISO_DATE_TIME);
-    }
-    
     public ZonedDateTime getZonedExpiration() {
         return getExpiration(zoneId);
     }
@@ -104,11 +101,6 @@ public class SaleableTicketCategory implements PriceContainer {
     }
 
     @Override
-    public String getCurrencyCode() {
-        return event.getCurrency();
-    }
-
-    @Override
     public Optional<BigDecimal> getOptionalVatPercentage() {
         return Optional.ofNullable(event.getVat());
     }
@@ -118,16 +110,12 @@ public class SaleableTicketCategory implements PriceContainer {
         return event.getVatStatus();
     }
 
-    public String getDescription() {
-        return description;
-    }
-
     public String getFormattedFinalPrice() {
-        return getFinalPriceToDisplay(getFinalPrice().add(getAppliedDiscount()), getVAT(), getVatStatus()).toString();
+        return MonetaryUtil.formatUnit(getFinalPriceToDisplay(getFinalPrice().add(getAppliedDiscount()), getVAT(), getVatStatus()), getCurrencyCode());
     }
 
-    public int[] getAmountOfTickets() {
-        return DecoratorUtil.generateRangeOfTicketQuantity(maxTickets, availableTickets);
+    public int getMaxTicketsAfterConfiguration() {
+        return maxTickets;
     }
 
     public int getAvailableTickets() {
@@ -135,15 +123,15 @@ public class SaleableTicketCategory implements PriceContainer {
     }
 
     public String getDiscountedPrice() {
-        return getFinalPriceToDisplay(getFinalPrice(), getVAT(), getVatStatus()).toString();
+        return MonetaryUtil.formatUnit(getFinalPriceToDisplay(getFinalPrice(), getVAT(), getVatStatus()), getCurrencyCode());
     }
 
     public boolean getSupportsDiscount() {
-        return promoCodeDiscount != null && getSaleable();
+        return getPromoCodeDiscount() != null && getSaleable();
     }
 
     public PromoCodeDiscount getPromoCodeDiscount() {
-        return promoCodeDiscount;
+        return (promoCodeDiscount == null || promoCodeDiscount.getCodeType() == PromoCodeDiscount.CodeType.DISCOUNT) ? promoCodeDiscount : null;
     }
 
     static BigDecimal getFinalPriceToDisplay(BigDecimal price, BigDecimal vat, VatStatus vatStatus) {

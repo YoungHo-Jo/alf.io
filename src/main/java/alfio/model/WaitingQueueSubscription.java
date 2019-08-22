@@ -16,14 +16,17 @@
  */
 package alfio.model;
 
+import alfio.util.LocaleUtil;
 import ch.digitalfondue.npjt.ConstructorAnnotationRowMapper.Column;
 import lombok.Getter;
+import lombok.ToString;
 
 import java.time.ZonedDateTime;
 import java.util.Locale;
 import java.util.Optional;
 
 @Getter
+@ToString
 public class WaitingQueueSubscription {
 
     public enum Status {
@@ -74,7 +77,7 @@ public class WaitingQueueSubscription {
     }
 
     public Locale getLocale() {
-        return Locale.forLanguageTag(userLanguage);
+        return LocaleUtil.forLanguageTag(userLanguage);
     }
 
     public boolean isPreSales() {

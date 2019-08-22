@@ -16,20 +16,19 @@
  */
 package alfio.manager;
 
+import alfio.manager.system.ConfigurationLevel;
 import alfio.manager.system.ConfigurationManager;
 import alfio.manager.user.UserManager;
 import alfio.model.*;
 import alfio.model.modification.TicketWithStatistic;
-import alfio.model.system.Configuration;
-import alfio.model.system.ConfigurationKeys;
 import alfio.model.user.Organization;
 import alfio.repository.*;
 import alfio.util.EventUtil;
 import alfio.util.MonetaryUtil;
 import lombok.AllArgsConstructor;
 import org.apache.commons.lang3.StringUtils;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.*;
@@ -38,16 +37,19 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static alfio.model.system.ConfigurationKeys.DISPLAY_STATS_IN_EVENT_DETAIL;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
+import static org.apache.commons.lang3.ObjectUtils.firstNonNull;
 
 @Component
 @AllArgsConstructor
+@Transactional(readOnly = true)
 public class EventStatisticsManager {
 
     private final EventRepository eventRepository;
     private final EventDescriptionRepository eventDescriptionRepository;
-    private final TicketRepository ticketRepository;
+    private final TicketSearchRepository ticketSearchRepository;
     private final TicketCategoryRepository ticketCategoryRepository;
     private final TicketCategoryDescriptionRepository ticketCategoryDescriptionRepository;
     private final TicketReservationRepository ticketReservationRepository;
@@ -77,14 +79,13 @@ public class EventStatisticsManager {
         }
     }
 
-    private boolean displayStatisticsForEvent(Event event) {
-        return configurationManager.getBooleanConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), ConfigurationKeys.DISPLAY_STATS_IN_EVENT_DETAIL), true);
+    private boolean displayStatisticsForEvent(EventAndOrganizationId event) {
+        return configurationManager.getFor(DISPLAY_STATS_IN_EVENT_DETAIL, ConfigurationLevel.event(event)).getValueAsBooleanOrDefault(true);
     }
 
 
-    @Cacheable
     public List<EventStatistic> getAllEventsWithStatistics(String username) {
-        return getAllEventsWithStatisticsFilteredBy(username, (e) -> true);
+        return getAllEventsWithStatisticsFilteredBy(username, e -> true);
     }
 
     public EventWithAdditionalInfo getEventWithAdditionalInfo(String eventName, String username) {
@@ -93,7 +94,7 @@ public class EventStatisticsManager {
         boolean owner = userManager.isOwner(userManager.findUserByUsername(username));
         EventStatisticView statistics = owner ? eventRepository.findStatisticsFor(event.getId()) : EventStatisticView.empty(event.getId());
         EventStatistic eventStatistic = new EventStatistic(event, statistics, displayStatisticsForEvent(event));
-        BigDecimal grossIncome = owner ? MonetaryUtil.centsToUnit(eventRepository.getGrossIncome(event.getId())) : BigDecimal.ZERO;
+        BigDecimal grossIncome = owner ? MonetaryUtil.centsToUnit(eventRepository.getGrossIncome(event.getId()), event.getCurrency()) : BigDecimal.ZERO;
 
         List<TicketCategory> ticketCategories = loadTicketCategories(event);
         List<Integer> ticketCategoriesIds = ticketCategories.stream().map(TicketCategory::getId).collect(Collectors.toList());
@@ -109,8 +110,8 @@ public class EventStatisticsManager {
         return new EventWithAdditionalInfo(event, tWithInfo, eventStatistic, description, grossIncome);
     }
 
-    private List<TicketCategory> loadTicketCategories(Event event) {
-        return ticketCategoryRepository.findByEventId(event.getId());
+    private List<TicketCategory> loadTicketCategories(EventAndOrganizationId event) {
+        return ticketCategoryRepository.findAllTicketCategories(event.getId());
     }
 
     private Event getEventAndCheckOwnership(String eventName, String username) {
@@ -128,18 +129,18 @@ public class EventStatisticsManager {
         Event event = eventRepository.findById(eventId);
         String toSearch = prepareSearchTerm(search);
         final int pageSize = 30;
-        return ticketRepository.findAllModifiedTicketsWithReservationAndTransaction(eventId, categoryId, page * pageSize, pageSize, toSearch).stream()
-            .map(t -> new TicketWithStatistic(t.getTicket(), event, t.getTicketReservation(), event.getZoneId(), t.getTransaction()))
+        return ticketSearchRepository.findAllModifiedTicketsWithReservationAndTransaction(eventId, categoryId, page * pageSize, pageSize, toSearch).stream()
+            .map(t -> new TicketWithStatistic(t.getTicket(), t.getTicketReservation(), event.getZoneId(), t.getTransaction(), firstNonNull(t.getPromoCode(), t.getSpecialPriceToken())))
             .sorted()
             .collect(Collectors.toList());
     }
 
     public Integer countModifiedTicket(int eventId, int categoryId, String search) {
         String toSearch = prepareSearchTerm(search);
-        return ticketRepository.countAllModifiedTicketsWithReservationAndTransaction(eventId, categoryId, toSearch);
+        return ticketSearchRepository.countAllModifiedTicketsWithReservationAndTransaction(eventId, categoryId, toSearch);
     }
 
-    public Predicate<Event> noSeatsAvailable() {
+    public Predicate<EventAndOrganizationId> noSeatsAvailable() {
         return event -> {
             Map<Integer, TicketCategoryStatisticView> stats = ticketCategoryRepository.findStatisticsForEventIdByCategoryId(event.getId());
             EventStatisticView eventStatisticView = eventRepository.findStatisticsFor(event.getId());
@@ -150,8 +151,12 @@ public class EventStatisticsManager {
         };
     }
 
-    public List<TicketSoldStatistic> getTicketSoldStatistics(int eventId, Date from, Date to) {
+    public List<TicketsByDateStatistic> getTicketSoldStatistics(int eventId, Date from, Date to) {
         return ticketReservationRepository.getSoldStatistic(eventId, from, to);
+    }
+
+    public List<TicketsByDateStatistic> getTicketReservedStatistics(int eventId, Date from, Date to) {
+        return ticketReservationRepository.getReservedStatistic(eventId, from, to);
     }
 
 

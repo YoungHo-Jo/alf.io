@@ -31,22 +31,12 @@ public class SaleableAdditionalService implements PriceContainer {
     private final Event event;
     @Delegate(excludes = {Exclusions.class, PriceContainer.class})
     private final AdditionalService additionalService;
-    private final String title;
-    private final String description;
     private final PromoCodeDiscount promoCodeDiscount;
-    private final int index;
 
-    public SaleableAdditionalService(Event event, AdditionalService additionalService, String title, String description, PromoCodeDiscount promoCodeDiscount, int index) {
+    public SaleableAdditionalService(Event event, AdditionalService additionalService, PromoCodeDiscount promoCodeDiscount) {
         this.event = event;
         this.additionalService = additionalService;
-        this.title = title;
-        this.description = description;
         this.promoCodeDiscount = promoCodeDiscount;
-        this.index = index;
-    }
-
-    public SaleableAdditionalService withIndex(int index) {
-        return new SaleableAdditionalService(this.event, this.additionalService, this.title, this.description, this.promoCodeDiscount, index);
     }
 
     public boolean isExpired() {
@@ -88,7 +78,8 @@ public class SaleableAdditionalService implements PriceContainer {
 
     @Override
     public Optional<PromoCodeDiscount> getDiscount() {
-        return Optional.ofNullable(promoCodeDiscount).filter(x -> getType() != AdditionalService.AdditionalServiceType.DONATION);
+        return Optional.ofNullable(promoCodeDiscount)
+            .filter(x -> x.getCodeType() == PromoCodeDiscount.CodeType.DISCOUNT && getType() != AdditionalService.AdditionalServiceType.DONATION);
     }
 
     @Override
@@ -114,11 +105,8 @@ public class SaleableAdditionalService implements PriceContainer {
     }
 
     public boolean getSupportsDiscount() {
-        return getType() != AdditionalService.AdditionalServiceType.DONATION && isFixPrice() && promoCodeDiscount != null;
-    }
-
-    public boolean getUserDefinedPrice() {
-        return !isFixPrice();
+        return getType() != AdditionalService.AdditionalServiceType.DONATION && isFixPrice()
+            && promoCodeDiscount != null && promoCodeDiscount.getCodeType() == PromoCodeDiscount.CodeType.DISCOUNT;
     }
 
     public String getDiscountedPrice() {
@@ -139,24 +127,6 @@ public class SaleableAdditionalService implements PriceContainer {
         }
     }
 
-    public boolean getMandatoryOneForTicket() {
-        return getSupplementPolicy() == AdditionalService.SupplementPolicy.MANDATORY_ONE_FOR_TICKET;
-    }
-
-    public boolean getUnlimitedAmount() {
-        return getSupplementPolicy() == AdditionalService.SupplementPolicy.OPTIONAL_UNLIMITED_AMOUNT;
-    }
-
-    public boolean getLimitedAmount() {
-        return getSupplementPolicy() == null ||
-            getSupplementPolicy() == AdditionalService.SupplementPolicy.OPTIONAL_MAX_AMOUNT_PER_RESERVATION ||
-            getSupplementPolicy() == AdditionalService.SupplementPolicy.OPTIONAL_MAX_AMOUNT_PER_TICKET;
-    }
-
-    public boolean getMaxAmountPerTicket() {
-        return getSupplementPolicy() == AdditionalService.SupplementPolicy.OPTIONAL_MAX_AMOUNT_PER_TICKET;
-    }
-
     public BigDecimal getVatPercentage() {
         AdditionalService.VatType vatType = getVatType();
         if(vatType == AdditionalService.VatType.INHERITED) {
@@ -169,17 +139,6 @@ public class SaleableAdditionalService implements PriceContainer {
         return getVatType() != AdditionalService.VatType.NONE;
     }
 
-    public int[] getAmountOfTickets() {
-        return DecoratorUtil.generateRangeOfTicketQuantity(additionalService.getMaxQtyPerOrder(), 100);
-    }
-
-    public boolean getSoldOut() {
-        return false;
-    }
-
-    private boolean getAccessRestricted() {
-        return false;
-    }
 
     public String getCurrency() {
         return event.getCurrency();

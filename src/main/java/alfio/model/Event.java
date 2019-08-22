@@ -38,9 +38,10 @@ import java.util.stream.Collectors;
 
 @Getter
 @Log4j2
-public class Event implements EventHiddenFieldContainer {
+public class Event extends EventAndOrganizationId implements EventHiddenFieldContainer {
 
     private static final String VERSION_FOR_FIRST_AND_LAST_NAME = "15.1.8.8";
+
     public enum Status {
         DRAFT, PUBLIC, DISABLED
     }
@@ -48,13 +49,13 @@ public class Event implements EventHiddenFieldContainer {
     public enum EventType {
         INTERNAL, EXTERNAL
     }
-    private final int id;
     private final EventType type;
     private final String shortName;
     private final String displayName;
     private final String websiteUrl;
     private final String externalUrl;
     private final String termsAndConditionsUrl;
+    private final String privacyPolicyUrl;
     private final String imageUrl;
     private final String fileBlobId;
     private final String location;
@@ -66,8 +67,9 @@ public class Event implements EventHiddenFieldContainer {
     private final boolean vatIncluded;
     private final BigDecimal vat;
     private final List<PaymentProxy> allowedPaymentProxies;
+
+    @JsonIgnore
     private final String privateKey;
-    private final int organizationId;
     private final ZoneId timeZone;
     private final int locales;
 
@@ -92,6 +94,7 @@ public class Event implements EventHiddenFieldContainer {
                  @Column("external_url") String externalUrl,
                  @Column("file_blob_id") String fileBlobId,
                  @Column("website_t_c_url") String termsAndConditionsUrl,
+                 @Column("website_p_p_url") String privacyPolicyUrl,
                  @Column("image_url") String imageUrl,
                  @Column("currency") String currency,
                  @Column("vat") BigDecimal vat,
@@ -104,16 +107,18 @@ public class Event implements EventHiddenFieldContainer {
                  @Column("version") String version,
                  @Column("status") Status status) {
 
+        super(id, organizationId);
         this.type = type;
         this.displayName = displayName;
         this.websiteUrl = websiteUrl;
         this.externalUrl = externalUrl;
         this.termsAndConditionsUrl = termsAndConditionsUrl;
+        this.privacyPolicyUrl = privacyPolicyUrl;
         this.imageUrl = imageUrl;
         this.fileBlobId = fileBlobId;
 
         final ZoneId zoneId = TimeZone.getTimeZone(timeZone).toZoneId();
-        this.id = id;
+
         this.shortName = shortName;
         this.location = location;
         this.latitude = latitude;
@@ -125,7 +130,7 @@ public class Event implements EventHiddenFieldContainer {
         this.vatIncluded = vatStatus == PriceContainer.VatStatus.INCLUDED;
         this.vat = vat;
         this.privateKey = privateKey;
-        this.organizationId = organizationId;
+
         this.locales = locales;
         this.allowedPaymentProxies = Arrays.stream(Optional.ofNullable(allowedPaymentProxies).orElse("").split(","))
                 .filter(StringUtils::isNotBlank)
@@ -138,7 +143,7 @@ public class Event implements EventHiddenFieldContainer {
     }
 
     public BigDecimal getRegularPrice() {
-        return MonetaryUtil.centsToUnit(srcPriceCts);
+        return MonetaryUtil.centsToUnit(srcPriceCts, currency);
     }
     
     
@@ -244,5 +249,9 @@ public class Event implements EventHiddenFieldContainer {
 
     public boolean expiredSince(int days) {
         return ZonedDateTime.now(getZoneId()).truncatedTo(ChronoUnit.DAYS).minusDays(days).isAfter(getEnd().truncatedTo(ChronoUnit.DAYS));
+    }
+
+    public String getPrivacyPolicyLinkOrNull() {
+        return StringUtils.trimToNull(privacyPolicyUrl);
     }
 }

@@ -16,9 +16,7 @@
  */
 package alfio.manager.system;
 
-import alfio.model.Event;
-import alfio.model.system.Configuration;
-import alfio.model.system.ConfigurationKeys;
+import alfio.model.EventAndOrganizationId;
 import alfio.util.Json;
 import lombok.extern.log4j.Log4j2;
 import okhttp3.*;
@@ -28,6 +26,8 @@ import org.apache.commons.lang3.StringUtils;
 import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
+
+import static alfio.model.system.ConfigurationKeys.*;
 
 @Log4j2
 public class MailjetMailer implements Mailer  {
@@ -40,11 +40,14 @@ public class MailjetMailer implements Mailer  {
     }
 
     @Override
-    public void send(Event event, String to, List<String> cc, String subject, String text, Optional<String> html, Attachment... attachment) {
-        String apiKeyPublic = configurationManager.getRequiredValue(Configuration.from(event.getOrganizationId(), event.getId(), ConfigurationKeys.MAILJET_APIKEY_PUBLIC));
-        String apiKeyPrivate = configurationManager.getRequiredValue(Configuration.from(event.getOrganizationId(), event.getId(), ConfigurationKeys.MAILJET_APIKEY_PRIVATE));
+    public void send(EventAndOrganizationId event, String fromName, String to, List<String> cc, String subject, String text, Optional<String> html, Attachment... attachment) {
 
-        String fromEmail = configurationManager.getRequiredValue(Configuration.from(event.getOrganizationId(), event.getId(), ConfigurationKeys.MAILJET_FROM));
+        var conf = configurationManager.getFor(Set.of(MAILJET_APIKEY_PUBLIC, MAILJET_APIKEY_PRIVATE, MAILJET_FROM, MAIL_REPLY_TO), ConfigurationLevel.event(event));
+
+
+        String apiKeyPublic = conf.get(MAILJET_APIKEY_PUBLIC).getRequiredValue();
+        String apiKeyPrivate = conf.get(MAILJET_APIKEY_PRIVATE).getRequiredValue();
+        String fromEmail = conf.get(MAILJET_FROM).getRequiredValue();
 
         //https://dev.mailjet.com/guides/?shell#sending-with-attached-files
         Map<String, Object> mailPayload = new HashMap<>();
@@ -56,13 +59,13 @@ public class MailjetMailer implements Mailer  {
         }
 
         mailPayload.put("FromEmail", fromEmail);
-        mailPayload.put("FromName", event.getDisplayName());
+        mailPayload.put("FromName", fromName);
         mailPayload.put("Subject", subject);
         mailPayload.put("Text-part", text);
         html.ifPresent(h -> mailPayload.put("Html-part", h));
         mailPayload.put("Recipients", recipients);
 
-        String replyTo = configurationManager.getStringConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), ConfigurationKeys.MAIL_REPLY_TO), "");
+        String replyTo = conf.get(MAIL_REPLY_TO).getValueOrDefault("");
         if(StringUtils.isNotBlank(replyTo)) {
             mailPayload.put("Headers", Collections.singletonMap("Reply-To", replyTo));
         }
@@ -79,6 +82,7 @@ public class MailjetMailer implements Mailer  {
         try (Response resp = client.newCall(request).execute()) {
             if (!resp.isSuccessful()) {
                 log.warn("sending email was not successful:" + resp);
+                throw new IllegalStateException("Attempt to send a message failed. Result is: "+resp.code());
             }
         } catch(IOException e) {
             log.warn("error while sending email", e);

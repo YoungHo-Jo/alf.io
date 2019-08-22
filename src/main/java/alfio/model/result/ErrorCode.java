@@ -20,6 +20,8 @@ import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 
+import java.util.function.Supplier;
+
 @JsonSerialize(using=ErrorCodeSerializer.class)
 public interface ErrorCode {
 
@@ -31,6 +33,7 @@ public interface ErrorCode {
 
     String getCode();
     String getDescription();
+    Object[] getArguments();
 
     @RequiredArgsConstructor
     @Getter
@@ -49,6 +52,11 @@ public interface ErrorCode {
         public String toString() {
             return description;
         }
+
+        @Override
+        public Object[] getArguments() {
+            return null;
+        }
     }
 
     @RequiredArgsConstructor
@@ -64,6 +72,11 @@ public interface ErrorCode {
         @Override
         public String toString() {
             return description;
+        }
+
+        @Override
+        public Object[] getArguments() {
+            return null;
         }
     }
 
@@ -82,6 +95,11 @@ public interface ErrorCode {
         public String toString() {
             return description;
         }
+
+        @Override
+        public Object[] getArguments() {
+            return null;
+        }
     }
 
     static ErrorCode custom(String code, String description) {
@@ -99,6 +117,41 @@ public interface ErrorCode {
             @Override
             public String toString() {
                 return description;
+            }
+
+            @Override
+            public Object[] getArguments() {
+                return null;
+            }
+        };
+    }
+
+    static ErrorCode lazy(Supplier<ErrorCode> supplier) {
+        return new ErrorCode() {
+
+            private transient ErrorCode delegate = null;
+
+            @Override
+            public String getCode() {
+                return get().getCode();
+            }
+
+            @Override
+            public String getDescription() {
+                return get().getDescription();
+            }
+
+            @Override
+            public Object[] getArguments() {
+                return null;
+            }
+
+            private synchronized ErrorCode get() {
+                if(delegate != null) {
+                    return delegate;
+                }
+                delegate = supplier.get();
+                return delegate;
             }
         };
     }

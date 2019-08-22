@@ -20,7 +20,7 @@ package alfio.extension;
 import alfio.util.Json;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.RemovalListener;
+import com.github.benmanes.caffeine.cache.RemovalCause;
 import lombok.extern.log4j.Log4j2;
 import okhttp3.OkHttpClient;
 import org.springframework.stereotype.Service;
@@ -49,13 +49,13 @@ public class ScriptingExecutionService {
     private static final OkHttpClient HTTP_CLIENT = new OkHttpClient();
     private static final SimpleHttpClient SIMPLE_HTTP_CLIENT = new SimpleHttpClient(HTTP_CLIENT);
 
-    private final static Compilable engine = (Compilable) new ScriptEngineManager().getEngineByName("nashorn");
+    private static final Compilable engine = (Compilable) new ScriptEngineManager().getEngineByName("nashorn");
     private final Cache<String, CompiledScript> compiledScriptCache = Caffeine.newBuilder()
         .expireAfterAccess(12, TimeUnit.HOURS)
         .build();
     private final Cache<String, ExecutorService> asyncExecutors = Caffeine.newBuilder()
         .expireAfterAccess(12, TimeUnit.HOURS)
-        .removalListener((RemovalListener<String, ExecutorService>) (key, value, cause) -> {
+        .removalListener((String key, ExecutorService value, RemovalCause cause) -> {
             if (value != null) {
                 value.shutdown();
             }
@@ -63,7 +63,7 @@ public class ScriptingExecutionService {
         .build();
 
     public <T> T executeScript(String name, String hash, Supplier<String> scriptFetcher, Map<String, Object> params, Class<T> clazz, ExtensionLogger extensionLogger) {
-        CompiledScript compiledScript = compiledScriptCache.get(hash, (key) -> {
+        CompiledScript compiledScript = compiledScriptCache.get(hash, key -> {
             try {
                 return engine.compile(scriptFetcher.get());
             } catch (Throwable se) {
@@ -76,10 +76,8 @@ public class ScriptingExecutionService {
     }
 
     public void executeScriptAsync(String path, String name, String hash, Supplier<String> scriptFetcher, Map<String, Object> params,  ExtensionLogger extensionLogger) {
-        Optional.ofNullable(asyncExecutors.get(path, (key) -> Executors.newSingleThreadExecutor()))
-            .ifPresent(it -> it.submit(() -> {
-               executeScript(name, hash, scriptFetcher, params, Object.class, extensionLogger);
-            }));
+        Optional.ofNullable(asyncExecutors.get(path, key -> Executors.newSingleThreadExecutor()))
+            .ifPresent(it -> it.submit(() -> executeScript(name, hash, scriptFetcher, params, Object.class, extensionLogger)));
     }
 
 

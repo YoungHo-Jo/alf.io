@@ -18,11 +18,12 @@ package alfio.controller.api.admin;
 
 import alfio.manager.CheckInManager;
 import alfio.manager.EventManager;
+import alfio.manager.support.CheckInStatistics;
 import alfio.manager.support.TicketAndCheckInResult;
+import alfio.manager.system.ConfigurationLevel;
 import alfio.manager.system.ConfigurationManager;
-import alfio.model.Event;
+import alfio.model.EventAndOrganizationId;
 import alfio.model.FullTicketInfo;
-import alfio.model.system.Configuration;
 import alfio.model.system.ConfigurationKeys;
 import alfio.util.Json;
 import com.fasterxml.jackson.annotation.JsonCreator;
@@ -34,6 +35,7 @@ import lombok.extern.log4j.Log4j2;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Validate;
 import org.apache.commons.lang3.time.DateUtils;
+import org.apache.commons.lang3.tuple.Pair;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -41,10 +43,9 @@ import org.springframework.web.bind.annotation.*;
 import javax.servlet.http.HttpServletResponse;
 import java.security.Principal;
 import java.util.*;
+import java.util.stream.Collectors;
 
-import static alfio.util.OptionalWrapper.optionally;
-import static org.springframework.web.bind.annotation.RequestMethod.GET;
-import static org.springframework.web.bind.annotation.RequestMethod.POST;
+import static alfio.util.Wrappers.optionally;
 
 @Log4j2
 @RestController
@@ -61,18 +62,24 @@ public class CheckInApiController {
     public static class TicketCode {
         private String code;
     }
+
+    @Data
+    public static class TicketIdentifierCode {
+        private String identifier;
+        private String code;
+    }
     
-    @RequestMapping(value = "/check-in/{eventId}/ticket/{ticketIdentifier}", method = GET)
+    @GetMapping("/check-in/{eventId}/ticket/{ticketIdentifier}")
     public TicketAndCheckInResult findTicketWithUUID(@PathVariable("eventId") int eventId, @PathVariable("ticketIdentifier") String ticketIdentifier, @RequestParam("qrCode") String qrCode) {
         return checkInManager.evaluateTicketStatus(eventId, ticketIdentifier, Optional.ofNullable(qrCode));
     }
 
-    @RequestMapping(value = "/check-in/event/{eventName}/ticket/{ticketIdentifier}", method = GET)
+    @GetMapping("/check-in/event/{eventName}/ticket/{ticketIdentifier}")
     public TicketAndCheckInResult findTicketWithUUID(@PathVariable("eventName") String eventName, @PathVariable("ticketIdentifier") String ticketIdentifier, @RequestParam("qrCode") String qrCode) {
         return checkInManager.evaluateTicketStatus(eventName, ticketIdentifier, Optional.ofNullable(qrCode));
     }
 
-    @RequestMapping(value = "/check-in/{eventId}/ticket/{ticketIdentifier}", method = POST)
+    @PostMapping("/check-in/{eventId}/ticket/{ticketIdentifier}")
     public TicketAndCheckInResult checkIn(@PathVariable("eventId") int eventId,
                                           @PathVariable("ticketIdentifier") String ticketIdentifier,
                                           @RequestBody TicketCode ticketCode,
@@ -80,17 +87,37 @@ public class CheckInApiController {
         return checkInManager.checkIn(eventId, ticketIdentifier, Optional.ofNullable(ticketCode).map(TicketCode::getCode), principal.getName());
     }
 
-    @RequestMapping(value = "/check-in/event/{eventName}/ticket/{ticketIdentifier}", method = POST)
+    @PostMapping("/check-in/event/{eventName}/ticket/{ticketIdentifier}")
     public TicketAndCheckInResult checkIn(@PathVariable("eventName") String eventName,
                                           @PathVariable("ticketIdentifier") String ticketIdentifier,
                                           @RequestBody TicketCode ticketCode,
                                           @RequestParam(value = "offlineUser", required = false) String offlineUser,
                                           Principal principal) {
-        String user = StringUtils.defaultIfBlank(offlineUser, principal.getName());
-        return checkInManager.checkIn(eventName, ticketIdentifier, Optional.ofNullable(ticketCode).map(TicketCode::getCode), user);
+        String username = principal.getName();
+        String auditUser = StringUtils.defaultIfBlank(offlineUser, username);
+        return checkInManager.checkIn(eventName, ticketIdentifier, Optional.ofNullable(ticketCode).map(TicketCode::getCode), username, auditUser);
     }
 
-    @RequestMapping(value = "/check-in/{eventId}/ticket/{ticketIdentifier}/manual-check-in", method = POST)
+    @PostMapping("/check-in/event/{eventName}/bulk")
+    public Map<String, TicketAndCheckInResult> bulkCheckIn(@PathVariable("eventName") String eventName,
+                                                           @RequestBody List<TicketIdentifierCode> ticketIdentifierCodes,
+                                                           @RequestParam(value = "offlineUser", required = false) String offlineUser,
+                                                           @RequestParam(value = "forceCheckInPaymentOnSite", required = false, defaultValue = "false") boolean forceCheckInPaymentOnSite,
+                                                           Principal principal) {
+        String username = principal.getName();
+        String auditUser = StringUtils.defaultIfBlank(offlineUser, username);
+        return ticketIdentifierCodes.stream()
+            .distinct()
+            .map(t -> {
+                TicketAndCheckInResult res = checkInManager.checkIn(eventName, t.getIdentifier(),
+                    Optional.ofNullable(t.getCode()),
+                    username, auditUser, forceCheckInPaymentOnSite);
+                return Pair.of(t.identifier, res);
+            })
+            .collect(Collectors.toMap(Pair::getKey, Pair::getValue));
+    }
+
+    @PostMapping("/check-in/{eventId}/ticket/{ticketIdentifier}/manual-check-in")
     public boolean manualCheckIn(@PathVariable("eventId") int eventId,
                                  @PathVariable("ticketIdentifier") String ticketIdentifier,
                                  Principal principal) {
@@ -98,7 +125,7 @@ public class CheckInApiController {
         return checkInManager.manualCheckIn(eventId, ticketIdentifier, principal.getName());
     }
 
-    @RequestMapping(value = "/check-in/{eventId}/ticket/{ticketIdentifier}/revert-check-in", method = POST)
+    @PostMapping("/check-in/{eventId}/ticket/{ticketIdentifier}/revert-check-in")
     public boolean revertCheckIn(@PathVariable("eventId") int eventId,
                                  @PathVariable("ticketIdentifier") String ticketIdentifier,
                                  Principal principal) {
@@ -106,24 +133,30 @@ public class CheckInApiController {
         return checkInManager.revertCheckIn(eventId, ticketIdentifier, principal.getName());
     }
 
-    @RequestMapping(value = "/check-in/event/{eventName}/ticket/{ticketIdentifier}/confirm-on-site-payment", method = POST)
+    @PostMapping("/check-in/event/{eventName}/ticket/{ticketIdentifier}/confirm-on-site-payment")
     public TicketAndCheckInResult confirmOnSitePayment(@PathVariable("eventName") String eventName,
                                                        @PathVariable("ticketIdentifier") String ticketIdentifier,
                                                        @RequestBody TicketCode ticketCode,
                                                        @RequestParam(value = "offlineUser", required = false) String offlineUser,
                                                        Principal principal) {
-        String user = StringUtils.defaultIfBlank(offlineUser, principal.getName());
-        return checkInManager.confirmOnSitePayment(eventName, ticketIdentifier, Optional.ofNullable(ticketCode).map(TicketCode::getCode), user);
+        String username = principal.getName();
+        String auditUser = StringUtils.defaultIfBlank(offlineUser, username);
+        return checkInManager.confirmOnSitePayment(eventName, ticketIdentifier, Optional.ofNullable(ticketCode).map(TicketCode::getCode), username, auditUser);
+    }
+
+    @GetMapping("/check-in/event/{eventName}/statistics")
+    public CheckInStatistics getStatistics(@PathVariable("eventName") String eventName, Principal principal) {
+        return checkInManager.getStatistics(eventName, principal.getName());
     }
     
-    @RequestMapping(value = "/check-in/{eventId}/ticket/{ticketIdentifier}/confirm-on-site-payment", method = POST)
+    @PostMapping("/check-in/{eventId}/ticket/{ticketIdentifier}/confirm-on-site-payment")
     public OnSitePaymentConfirmation confirmOnSitePayment(@PathVariable("eventId") int eventId, @PathVariable("ticketIdentifier") String ticketIdentifier) {
         return checkInManager.confirmOnSitePayment(ticketIdentifier)
             .map(s -> new OnSitePaymentConfirmation(true, "ok"))
             .orElseGet(() -> new OnSitePaymentConfirmation(false, "Ticket with uuid " + ticketIdentifier + " not found"));
     }
-    
-    @RequestMapping(value = "/check-in/{eventId}/ticket-identifiers", method = GET)
+
+    @GetMapping("/check-in/{eventId}/ticket-identifiers")
     public List<Integer> findAllIdentifiersForAdminCheckIn(@PathVariable("eventId") int eventId,
                                                @RequestParam(value = "changedSince", required = false) Long changedSince,
                                                HttpServletResponse response,
@@ -132,7 +165,7 @@ public class CheckInApiController {
         return checkInManager.getAttendeesIdentifiers(eventId, changedSince == null ? new Date(0) : new Date(changedSince), principal.getName());
     }
 
-    @RequestMapping(value = "/check-in/{eventId}/tickets", method = POST)
+    @PostMapping("/check-in/{eventId}/tickets")
     public List<FullTicketInfo> findAllTicketsForAdminCheckIn(@PathVariable("eventId") int eventId,
                                                               @RequestBody List<Integer> ids,
                                                               Principal principal) {
@@ -140,21 +173,21 @@ public class CheckInApiController {
         return checkInManager.getAttendeesInformation(eventId, ids, principal.getName());
     }
 
-    @RequestMapping(value = "/check-in/{eventName}/label-layout", method = GET)
+    @GetMapping("/check-in/{eventName}/label-layout")
     public ResponseEntity<LabelLayout> getLabelLayoutForEvent(@PathVariable("eventName") String eventName, Principal principal) {
-        return optionally(() -> eventManager.getSingleEvent(eventName, principal.getName()))
+        return eventManager.getOptionalEventAndOrganizationIdByName(eventName, principal.getName())
             .filter(checkInManager.isOfflineCheckInAndLabelPrintingEnabled())
             .map(this::parseLabelLayout)
             .orElseGet(() -> new ResponseEntity<>(HttpStatus.PRECONDITION_FAILED));
     }
 
-    @RequestMapping(value = "/check-in/{eventName}/offline-identifiers", method = GET)
+    @GetMapping("/check-in/{eventName}/offline-identifiers")
     public List<Integer> getOfflineIdentifiers(@PathVariable("eventName") String eventName,
                                               @RequestParam(value = "changedSince", required = false) Long changedSince,
                                               HttpServletResponse resp,
                                               Principal principal) {
         Date since = changedSince == null ? new Date(0) : DateUtils.addSeconds(new Date(changedSince), -1);
-        Optional<List<Integer>> ids = optionally(() -> eventManager.getSingleEvent(eventName, principal.getName()))
+        Optional<List<Integer>> ids = eventManager.getOptionalEventAndOrganizationIdByName(eventName, principal.getName())
             .filter(checkInManager.isOfflineCheckInEnabled())
             .map(event -> checkInManager.getAttendeesIdentifiers(event, since, principal.getName()));
 
@@ -162,14 +195,14 @@ public class CheckInApiController {
         return ids.orElse(Collections.emptyList());
     }
 
-    @RequestMapping(value = "/check-in/{eventName}/offline", method = POST)
+    @PostMapping("/check-in/{eventName}/offline")
     public Map<String, String> getOfflineEncryptedInfo(@PathVariable("eventName") String eventName,
                                                        @RequestParam(value = "additionalField", required = false) List<String> additionalFields,
                                                        @RequestBody List<Integer> ids,
                                                        Principal principal) {
 
         validateIdList(ids);
-        return optionally(() -> eventManager.getSingleEvent(eventName, principal.getName()))
+        return eventManager.getOptionalByName(eventName, principal.getName())
             .map(event -> {
                 Set<String> addFields = loadLabelLayout(event)
                     .map(layout -> {
@@ -195,14 +228,14 @@ public class CheckInApiController {
         Validate.isTrue(ids.size() <= 200, "Cannot ask more than 200 ids");
     }
 
-    private ResponseEntity<LabelLayout> parseLabelLayout(Event event) {
+    private ResponseEntity<LabelLayout> parseLabelLayout(EventAndOrganizationId event) {
         return loadLabelLayout(event)
             .map(ResponseEntity::ok)
             .orElseGet(() -> new ResponseEntity<>(HttpStatus.NO_CONTENT));
     }
 
-    private Optional<LabelLayout> loadLabelLayout(Event event) {
-        return configurationManager.getStringConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), ConfigurationKeys.LABEL_LAYOUT))
+    private Optional<LabelLayout> loadLabelLayout(EventAndOrganizationId event) {
+        return configurationManager.getFor(ConfigurationKeys.LABEL_LAYOUT, ConfigurationLevel.event(event)).getValue()
             .flatMap(str -> optionally(() -> Json.fromJson(str, LabelLayout.class)));
     }
 
@@ -244,11 +277,23 @@ public class CheckInApiController {
         @Getter
         private static class Content {
 
+            private final String firstRow;
+            private final String secondRow;
             private final List<String> thirdRow;
+            private final List<String> additionalRows;
+            private final Boolean checkbox;
 
             @JsonCreator
-            private Content(@JsonProperty("thirdRow") List<String> thirdRow) {
-                this.thirdRow = thirdRow;
+            private Content(@JsonProperty("firstRow") String firstRow,
+                            @JsonProperty("secondRow") String secondRow,
+                            @JsonProperty("thirdRow") List<String> thirdRow,
+                            @JsonProperty("additionalRows") List<String> additionalRows,
+                            @JsonProperty("checkbox") Boolean checkbox) {
+                this.firstRow = firstRow;
+                this.secondRow = secondRow;
+                this.thirdRow = thirdRow != null ? thirdRow : List.of();
+                this.additionalRows = additionalRows != null ? additionalRows : List.of();
+                this.checkbox = checkbox;
             }
         }
 
@@ -262,4 +307,5 @@ public class CheckInApiController {
             }
         }
     }
+
 }

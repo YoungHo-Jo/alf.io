@@ -17,20 +17,21 @@
 package alfio.manager;
 
 import alfio.controller.support.TemplateProcessor;
+import alfio.manager.i18n.MessageSourceManager;
 import alfio.manager.support.CustomMessageManager;
-import alfio.manager.support.PDFTemplateGenerator;
 import alfio.manager.support.PartialTicketTextGenerator;
 import alfio.manager.support.TextTemplateGenerator;
+import alfio.manager.system.ConfigurationLevel;
 import alfio.manager.system.ConfigurationManager;
 import alfio.manager.system.Mailer;
 import alfio.model.*;
-import alfio.model.system.Configuration;
 import alfio.model.system.ConfigurationKeys;
 import alfio.model.user.Organization;
 import alfio.repository.*;
 import alfio.repository.user.OrganizationRepository;
 import alfio.util.EventUtil;
 import alfio.util.Json;
+import alfio.util.LocaleUtil;
 import alfio.util.TemplateManager;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.gson.*;
@@ -40,10 +41,12 @@ import org.apache.commons.lang3.time.DateUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.MessageSource;
 import org.springframework.security.crypto.codec.Hex;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.DefaultTransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.ByteArrayOutputStream;
@@ -55,6 +58,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.ZonedDateTime;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -67,7 +71,7 @@ public class NotificationManager {
 
     public static final Clock UTC = Clock.systemUTC();
     private final Mailer mailer;
-    private final MessageSource messageSource;
+    private final MessageSourceManager messageSourceManager;
     private final EmailMessageRepository emailMessageRepository;
     private final TransactionTemplate tx;
     private final EventRepository eventRepository;
@@ -79,7 +83,7 @@ public class NotificationManager {
 
     @Autowired
     public NotificationManager(Mailer mailer,
-                               MessageSource messageSource,
+                               MessageSourceManager messageSourceManager,
                                PlatformTransactionManager transactionManager,
                                EmailMessageRepository emailMessageRepository,
                                EventRepository eventRepository,
@@ -90,13 +94,18 @@ public class NotificationManager {
                                TemplateManager templateManager,
                                TicketReservationRepository ticketReservationRepository,
                                TicketCategoryRepository ticketCategoryRepository,
-                               PassBookManager passBookManager) {
-        this.messageSource = messageSource;
+                               PassKitManager passKitManager,
+                               TicketRepository ticketRepository,
+                               TicketFieldRepository ticketFieldRepository,
+                               AdditionalServiceItemRepository additionalServiceItemRepository,
+                               ExtensionManager extensionManager) {
+        this.messageSourceManager = messageSourceManager;
         this.mailer = mailer;
         this.emailMessageRepository = emailMessageRepository;
         this.eventRepository = eventRepository;
         this.organizationRepository = organizationRepository;
-        this.tx = new TransactionTemplate(transactionManager);
+        DefaultTransactionDefinition definition = new DefaultTransactionDefinition(TransactionDefinition.PROPAGATION_NESTED);
+        this.tx = new TransactionTemplate(transactionManager, definition);
         this.configurationManager = configurationManager;
         GsonBuilder builder = new GsonBuilder();
         builder.registerTypeAdapter(Mailer.Attachment.class, new AttachmentConverter());
@@ -104,15 +113,25 @@ public class NotificationManager {
         attachmentTransformer = new EnumMap<>(Mailer.AttachmentIdentifier.class);
         attachmentTransformer.put(Mailer.AttachmentIdentifier.CALENDAR_ICS, generateICS(eventRepository, eventDescriptionRepository, ticketCategoryRepository));
         attachmentTransformer.put(Mailer.AttachmentIdentifier.RECEIPT_PDF, receiptOrInvoiceFactory(eventRepository,
-            payload -> TemplateProcessor.buildReceiptPdf(payload.getLeft(), fileUploadManager, payload.getMiddle(), templateManager, payload.getRight())));
+            payload -> TemplateProcessor.buildReceiptPdf(payload.getLeft(), fileUploadManager, payload.getMiddle(), templateManager, payload.getRight(), extensionManager)));
         attachmentTransformer.put(Mailer.AttachmentIdentifier.INVOICE_PDF, receiptOrInvoiceFactory(eventRepository,
-            payload -> TemplateProcessor.buildInvoicePdf(payload.getLeft(), fileUploadManager, payload.getMiddle(), templateManager, payload.getRight())));
-        attachmentTransformer.put(Mailer.AttachmentIdentifier.PASSBOOK, passBookManager::getPassBook);
-        attachmentTransformer.put(Mailer.AttachmentIdentifier.TICKET_PDF, generateTicketPDF(eventRepository, organizationRepository, configurationManager, fileUploadManager, templateManager, ticketReservationRepository));
+            payload -> TemplateProcessor.buildInvoicePdf(payload.getLeft(), fileUploadManager, payload.getMiddle(), templateManager, payload.getRight(), extensionManager)));
+        attachmentTransformer.put(Mailer.AttachmentIdentifier.CREDIT_NOTE_PDF, receiptOrInvoiceFactory(eventRepository,
+            payload -> TemplateProcessor.buildCreditNotePdf(payload.getLeft(), fileUploadManager, payload.getMiddle(), templateManager, payload.getRight(), extensionManager)));
+        attachmentTransformer.put(Mailer.AttachmentIdentifier.PASSBOOK, passKitManager::getPass);
+        Function<Ticket, List<TicketFieldConfigurationDescriptionAndValue>> retrieveFieldValues = EventUtil.retrieveFieldValues(ticketRepository, ticketFieldRepository, additionalServiceItemRepository);
+        attachmentTransformer.put(Mailer.AttachmentIdentifier.TICKET_PDF, generateTicketPDF(eventRepository, organizationRepository, configurationManager, fileUploadManager, templateManager, ticketReservationRepository, retrieveFieldValues, extensionManager));
     }
 
-    private static Function<Map<String, String>, byte[]> generateTicketPDF(EventRepository eventRepository, OrganizationRepository organizationRepository, ConfigurationManager configurationManager, FileUploadManager fileUploadManager, TemplateManager templateManager, TicketReservationRepository ticketReservationRepository) {
-        return (model) -> {
+    private static Function<Map<String, String>, byte[]> generateTicketPDF(EventRepository eventRepository,
+                                                                           OrganizationRepository organizationRepository,
+                                                                           ConfigurationManager configurationManager,
+                                                                           FileUploadManager fileUploadManager,
+                                                                           TemplateManager templateManager,
+                                                                           TicketReservationRepository ticketReservationRepository,
+                                                                           Function<Ticket, List<TicketFieldConfigurationDescriptionAndValue>> retrieveFieldValues,
+                                                                           ExtensionManager extensionManager) {
+        return model -> {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             Ticket ticket = Json.fromJson(model.get("ticket"), Ticket.class);
             try {
@@ -120,9 +139,9 @@ public class NotificationManager {
                 TicketCategory ticketCategory = Json.fromJson(model.get("ticketCategory"), TicketCategory.class);
                 Event event = eventRepository.findById(ticket.getEventId());
                 Organization organization = organizationRepository.getById(Integer.valueOf(model.get("organizationId"), 10));
-                PDFTemplateGenerator pdfTemplateGenerator = TemplateProcessor.buildPDFTicket(Locale.forLanguageTag(ticket.getUserLanguage()), event, reservation,
-                    ticket, ticketCategory, organization, templateManager, fileUploadManager, configurationManager.getShortReservationID(event, ticket.getTicketsReservationId()));
-                pdfTemplateGenerator.generate().createPDF(baos);
+                TemplateProcessor.renderPDFTicket(LocaleUtil.forLanguageTag(ticket.getUserLanguage()), event, reservation,
+                    ticket, ticketCategory, organization, templateManager, fileUploadManager,
+                    configurationManager.getShortReservationID(event, reservation), baos, retrieveFieldValues, extensionManager);
             } catch (IOException e) {
                 log.warn("was not able to generate ticket pdf for ticket with id" + ticket.getId(), e);
             }
@@ -131,7 +150,7 @@ public class NotificationManager {
     }
 
     private static Function<Map<String, String>, byte[]> generateICS(EventRepository eventRepository, EventDescriptionRepository eventDescriptionRepository, TicketCategoryRepository ticketCategoryRepository) {
-        return (model) -> {
+        return model -> {
             Event event;
             Locale locale;
             Integer categoryId;
@@ -143,7 +162,7 @@ public class NotificationManager {
             } else {
                 Ticket ticket = Json.fromJson(model.get("ticket"), Ticket.class);
                 event = eventRepository.findById(ticket.getEventId());
-                locale = Locale.forLanguageTag(ticket.getUserLanguage());
+                locale = LocaleUtil.forLanguageTag(ticket.getUserLanguage());
                 categoryId = ticket.getCategoryId();
             }
             TicketCategory category = Optional.ofNullable(categoryId).map(ticketCategoryRepository::getById).orElse(null);
@@ -153,71 +172,74 @@ public class NotificationManager {
     }
 
     private static Function<Map<String, String>, byte[]> receiptOrInvoiceFactory(EventRepository eventRepository, Function<Triple<Event, Locale, Map<String, Object>>, Optional<byte[]>> pdfGenerator) {
-        return (model) -> {
+        return model -> {
             String reservationId = model.get("reservationId");
             Event event = eventRepository.findById(Integer.valueOf(model.get("eventId"), 10));
             Locale language = Json.fromJson(model.get("language"), Locale.class);
 
-            Map<String, Object> reservationEmailModel = Json.fromJson(model.get("reservationEmailModel"), new TypeReference<Map<String, Object>>() {});
+            Map<String, Object> reservationEmailModel = Json.fromJson(model.get("reservationEmailModel"), new TypeReference<>() {
+            });
             //FIXME hack: reservationEmailModel should be a minimal and typed container
             reservationEmailModel.put("event", event);
             Optional<byte[]> receipt = pdfGenerator.apply(Triple.of(event, language, reservationEmailModel));
 
-            if(!receipt.isPresent()) {
+            if(receipt.isEmpty()) {
                 log.warn("was not able to generate the receipt for reservation id " + reservationId + " for locale " + language);
             }
             return receipt.orElse(null);
         };
     }
 
-    public void sendTicketByEmail(Ticket ticket, Event event, Locale locale, PartialTicketTextGenerator textBuilder, TicketReservation reservation, TicketCategory ticketCategory) throws IOException {
+    public void sendTicketByEmail(Ticket ticket, EventAndOrganizationId event, Locale locale, PartialTicketTextGenerator textBuilder, TicketReservation reservation, TicketCategory ticketCategory) {
 
         Organization organization = organizationRepository.getById(event.getOrganizationId());
 
         List<Mailer.Attachment> attachments = new ArrayList<>();
         attachments.add(CustomMessageManager.generateTicketAttachment(ticket, reservation, ticketCategory, organization));
 
-        String encodedAttachments = encodeAttachments(attachments.toArray(new Mailer.Attachment[attachments.size()]));
-        String subject = messageSource.getMessage("ticket-email-subject", new Object[]{event.getDisplayName()}, locale);
+        String displayName = eventRepository.getDisplayNameById(event.getId());
+
+        String encodedAttachments = encodeAttachments(attachments.toArray(new Mailer.Attachment[0]));
+        String subject = messageSourceManager.getMessageSourceForEvent(event).getMessage("ticket-email-subject", new Object[]{displayName}, locale);
         String text = textBuilder.generate(ticket);
         String checksum = calculateChecksum(ticket.getEmail(), encodedAttachments, subject, text);
         String recipient = ticket.getEmail();
         //TODO handle HTML
-        tx.execute(status -> emailMessageRepository.insert(event.getId(), recipient, null, subject, text, encodedAttachments, checksum, ZonedDateTime.now(UTC)));
+        tx.execute(status -> emailMessageRepository.insert(event.getId(), reservation.getId(), recipient, null, subject, text, encodedAttachments, checksum, ZonedDateTime.now(UTC)));
     }
 
-    public void sendSimpleEmail(Event event, String recipient, List<String> cc, String subject, TextTemplateGenerator textBuilder) {
-        sendSimpleEmail(event, recipient, cc, subject, textBuilder, Collections.emptyList());
+    public void sendSimpleEmail(EventAndOrganizationId event, String reservationId, String recipient, List<String> cc, String subject, TextTemplateGenerator textBuilder) {
+        sendSimpleEmail(event, reservationId, recipient, cc, subject, textBuilder, Collections.emptyList());
     }
 
-    public List<String> getCCForEventOrganizer(Event event) {
-        Configuration.ConfigurationPathKey key = Configuration.from(event.getOrganizationId(), event.getId(), ConfigurationKeys.MAIL_SYSTEM_NOTIFICATION_CC);
-        return Stream.of(StringUtils.split(configurationManager.getStringConfigValue(key, ""), ','))
+    public List<String> getCCForEventOrganizer(EventAndOrganizationId event) {
+        var systemNotificationCC = configurationManager.getFor(ConfigurationKeys.MAIL_SYSTEM_NOTIFICATION_CC, ConfigurationLevel.event(event)).getValueOrDefault("");
+        return Stream.of(StringUtils.split(systemNotificationCC, ','))
             .filter(Objects::nonNull)
             .map(String::trim)
             .filter(StringUtils::isNotBlank)
             .collect(Collectors.toList());
     }
 
-    public void sendSimpleEmail(Event event, String recipient, String subject, TextTemplateGenerator textBuilder) {
-        sendSimpleEmail(event, recipient, Collections.emptyList(), subject, textBuilder);
+    public void sendSimpleEmail(EventAndOrganizationId event, String reservationId, String recipient, String subject, TextTemplateGenerator textBuilder) {
+        sendSimpleEmail(event, reservationId, recipient, Collections.emptyList(), subject, textBuilder);
     }
 
-    public void sendSimpleEmail(Event event, String recipient, String subject, TextTemplateGenerator textBuilder, List<Mailer.Attachment> attachments) {
-        sendSimpleEmail(event, recipient, Collections.emptyList(), subject, textBuilder, attachments);
+    public void sendSimpleEmail(EventAndOrganizationId event, String reservationId, String recipient, String subject, TextTemplateGenerator textBuilder, List<Mailer.Attachment> attachments) {
+        sendSimpleEmail(event, reservationId, recipient, Collections.emptyList(), subject, textBuilder, attachments);
     }
 
-    public void sendSimpleEmail(Event event, String recipient, List<String> cc, String subject, TextTemplateGenerator textBuilder, List<Mailer.Attachment> attachments) {
+    public void sendSimpleEmail(EventAndOrganizationId event, String reservationId, String recipient, List<String> cc, String subject, TextTemplateGenerator textBuilder, List<Mailer.Attachment> attachments) {
 
-        String encodedAttachments = attachments.isEmpty() ? null : encodeAttachments(attachments.toArray(new Mailer.Attachment[attachments.size()]));
+        String encodedAttachments = attachments.isEmpty() ? null : encodeAttachments(attachments.toArray(new Mailer.Attachment[0]));
         String encodedCC = Json.toJson(cc);
 
         String text = textBuilder.generate();
         String checksum = calculateChecksum(recipient, encodedAttachments, subject, text);
         //in order to minimize the database size, it is worth checking if there is already another message in the table
         Optional<EmailMessage> existing = emailMessageRepository.findByEventIdAndChecksum(event.getId(), checksum);
-        if(!existing.isPresent()) {
-            emailMessageRepository.insert(event.getId(), recipient, encodedCC, subject, text, encodedAttachments, checksum, ZonedDateTime.now(UTC));
+        if(existing.isEmpty()) {
+            emailMessageRepository.insert(event.getId(), reservationId, recipient, encodedCC, subject, text, encodedAttachments, checksum, ZonedDateTime.now(UTC));
         } else {
             emailMessageRepository.updateStatus(event.getId(), WAITING.name(), existing.get().getId());
         }
@@ -231,37 +253,47 @@ public class NotificationManager {
         return Pair.of(emailMessageRepository.countFindByEventId(eventId, toSearch), emailMessageRepository.findByEventId(eventId, offset, pageSize, toSearch));
     }
 
+    public List<LightweightMailMessage> loadAllMessagesForReservationId(int eventId, String reservationId) {
+        return emailMessageRepository.findByEventIdAndReservationId(eventId, reservationId);
+    }
+
     public Optional<EmailMessage> loadSingleMessageForEvent(int eventId, int messageId) {
         return emailMessageRepository.findByEventIdAndMessageId(eventId, messageId);
     }
 
-    void sendWaitingMessages() {
+    @Transactional
+    public int sendWaitingMessages() {
         Date now = new Date();
+
+        emailMessageRepository.setToRetryOldInProcess(DateUtils.addHours(now, -1));
+
+        AtomicInteger counter = new AtomicInteger();
+
         eventRepository.findAllActiveIds(ZonedDateTime.now(UTC))
             .stream()
             .flatMap(id -> emailMessageRepository.loadIdsWaitingForProcessing(id, now).stream())
             .distinct()
-            .forEach(this::processMessage);
+            .forEach(messageId -> counter.addAndGet(processMessage(messageId)));
+        return counter.get();
     }
 
-    private void processMessage(int messageId) {
+    private int processMessage(int messageId) {
         EmailMessage message = emailMessageRepository.findById(messageId);
-        int eventId = message.getEventId();
-        int organizationId = eventRepository.findOrganizationIdByEventId(eventId);
-        if(message.getAttempts() >= configurationManager.getIntConfigValue(Configuration.from(organizationId, eventId, ConfigurationKeys.MAIL_ATTEMPTS_COUNT), 10)) {
+        EventAndOrganizationId event = eventRepository.findEventAndOrganizationIdById(message.getEventId());
+        if(message.getAttempts() >= configurationManager.getFor(ConfigurationKeys.MAIL_ATTEMPTS_COUNT, ConfigurationLevel.event(event)).getValueAsIntOrDefault(10)) {
             tx.execute(status -> emailMessageRepository.updateStatusAndAttempts(messageId, ERROR.name(), message.getAttempts(), Arrays.asList(IN_PROCESS.name(), WAITING.name(), RETRY.name())));
             log.warn("Message with id " + messageId + " will be discarded");
-            return;
+            return 0;
         }
 
 
         try {
-            int result = tx.execute(status -> emailMessageRepository.updateStatus(message.getEventId(), message.getChecksum(), IN_PROCESS.name(), Arrays.asList(WAITING.name(), RETRY.name())));
+            int result = Optional.ofNullable(tx.execute(status -> emailMessageRepository.updateStatus(message.getEventId(), message.getChecksum(), IN_PROCESS.name(), Arrays.asList(WAITING.name(), RETRY.name())))).orElse(0);
             if(result > 0) {
-                tx.execute(status -> {
-                    sendMessage(message);
-                    return null;
-                });
+                return Optional.ofNullable(tx.execute(status -> {
+                    sendMessage(event, message);
+                    return 1;
+                })).orElse(0);
             } else {
                 log.debug("no messages have been updated on DB for the following criteria: eventId: {}, checksum: {}", message.getEventId(), message.getChecksum());
             }
@@ -269,11 +301,12 @@ public class NotificationManager {
             tx.execute(status -> emailMessageRepository.updateStatusAndAttempts(message.getId(), RETRY.name(), DateUtils.addMinutes(new Date(), message.getAttempts() + 1), message.getAttempts() + 1, Arrays.asList(IN_PROCESS.name(), WAITING.name(), RETRY.name())));
             log.warn("could not send message: ",e);
         }
+        return 0;
     }
 
-    private void sendMessage(EmailMessage message) {
-        Event event = eventRepository.findById(message.getEventId());
-        mailer.send(event, message.getRecipient(), message.getCc(), message.getSubject(), message.getMessage(), Optional.empty(), decodeAttachments(message.getAttachments()));
+    private void sendMessage(EventAndOrganizationId event, EmailMessage message) {
+        String displayName = eventRepository.getDisplayNameById(message.getEventId());
+        mailer.send(event, displayName, message.getRecipient(), message.getCc(), message.getSubject(), message.getMessage(), Optional.empty(), decodeAttachments(message.getAttachments()));
         emailMessageRepository.updateStatusToSent(message.getEventId(), message.getChecksum(), ZonedDateTime.now(UTC), Collections.singletonList(IN_PROCESS.name()));
     }
 
@@ -307,7 +340,7 @@ public class NotificationManager {
         );
 
         generated.addAll(reinterpreted.stream().filter(Objects::nonNull).collect(Collectors.toList()));
-        return generated.toArray(new Mailer.Attachment[generated.size()]);
+        return generated.toArray(new Mailer.Attachment[0]);
     }
 
     private Mailer.Attachment transformAttachment(Mailer.Attachment attachment, Mailer.AttachmentIdentifier identifier) {
@@ -346,7 +379,7 @@ public class NotificationManager {
         }
 
         @Override
-        public Mailer.Attachment deserialize(JsonElement json, Type typeOfT, JsonDeserializationContext context) throws JsonParseException {
+        public Mailer.Attachment deserialize(JsonElement json, Type typeOfT, JsonDeserializationContext context) {
             JsonObject jsonObject = json.getAsJsonObject();
             String filename = jsonObject.getAsJsonPrimitive("filename").getAsString();
             byte[] source =  jsonObject.has("source") ? Base64.getDecoder().decode(jsonObject.getAsJsonPrimitive("source").getAsString()) : null;

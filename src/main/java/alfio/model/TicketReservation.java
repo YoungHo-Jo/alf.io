@@ -21,6 +21,7 @@ import alfio.util.Json;
 import ch.digitalfondue.npjt.ConstructorAnnotationRowMapper.Column;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Getter;
+import lombok.experimental.Wither;
 import org.apache.commons.lang3.StringUtils;
 
 import java.math.BigDecimal;
@@ -29,10 +30,10 @@ import java.time.ZonedDateTime;
 import java.util.*;
 
 @Getter
-public class TicketReservation {
+public class TicketReservation implements PriceContainer {
 
     public enum TicketReservationStatus {
-        PENDING, IN_PAYMENT, EXTERNAL_PROCESSING_PAYMENT, OFFLINE_PAYMENT, COMPLETE, STUCK, CANCELLED
+        PENDING, IN_PAYMENT, EXTERNAL_PROCESSING_PAYMENT, WAITING_EXTERNAL_CONFIRMATION, OFFLINE_PAYMENT, COMPLETE, STUCK, CANCELLED, CREDIT_NOTE_ISSUED
     }
 
     private final String id;
@@ -54,12 +55,24 @@ public class TicketReservation {
     private final String invoiceNumber;
     @JsonIgnore
     private final String invoiceModel;
+    @Wither
     private final PriceContainer.VatStatus vatStatus;
     private final String vatNr;
     private final String vatCountryCode;
     private final boolean invoiceRequested;
     private final BigDecimal usedVatPercent;
     private final Boolean vatIncluded;
+    private final ZonedDateTime creationTimestamp;
+    private final String customerReference;
+    private final ZonedDateTime registrationTimestamp;
+
+
+    private final int srcPriceCts;
+    private final int finalPriceCts;
+    private final int vatCts;
+    private final int discountCts;
+    private final String currencyCode;
+
 
     public TicketReservation(@Column("id") String id,
                              @Column("validity") Date validity,
@@ -84,7 +97,15 @@ public class TicketReservation {
                              @Column("vat_country") String vatCountryCode,
                              @Column("invoice_requested") boolean invoiceRequested,
                              @Column("used_vat_percent") BigDecimal usedVatPercent,
-                             @Column("vat_included") Boolean vatIncluded) {
+                             @Column("vat_included") Boolean vatIncluded,
+                             @Column("creation_ts") ZonedDateTime creationTimestamp,
+                             @Column("customer_reference") String customerReference,
+                             @Column("registration_ts") ZonedDateTime registrationTimestamp,
+                             @Column("src_price_cts") Integer srcPriceCts,
+                             @Column("final_price_cts") Integer finalPriceCts,
+                             @Column("vat_cts") Integer vatCts,
+                             @Column("discount_cts") Integer discountCts,
+                             @Column("currency_code") String currencyCode) {
         this.id = id;
         this.validity = validity;
         this.status = status;
@@ -109,6 +130,15 @@ public class TicketReservation {
         this.invoiceRequested = invoiceRequested;
         this.usedVatPercent = usedVatPercent;
         this.vatIncluded = vatIncluded;
+        this.creationTimestamp = creationTimestamp;
+        this.registrationTimestamp = registrationTimestamp;
+        this.customerReference = customerReference;
+
+        this.srcPriceCts = Optional.ofNullable(srcPriceCts).orElse(0);
+        this.finalPriceCts = Optional.ofNullable(finalPriceCts).orElse(0);
+        this.vatCts = Optional.ofNullable(vatCts).orElse(0);
+        this.discountCts = Optional.ofNullable(discountCts).orElse(0);
+        this.currencyCode = currencyCode;
     }
 
     public boolean isStuck() {
@@ -140,7 +170,7 @@ public class TicketReservation {
     }
 
     public boolean getHasBeenPaid() {
-        return status == TicketReservationStatus.COMPLETE;
+        return status == TicketReservationStatus.COMPLETE && !EnumSet.of(PaymentProxy.NONE, PaymentProxy.ADMIN).contains(paymentMethod);
     }
 
     public boolean getHasVatNumber() {
@@ -152,6 +182,10 @@ public class TicketReservation {
             return Collections.emptyList();
         }
         return Arrays.asList(StringUtils.split(billingAddress, '\n'));
+    }
+
+    public boolean isCancelled() {
+        return status == TicketReservationStatus.CANCELLED;
     }
 
     @JsonIgnore
@@ -167,5 +201,10 @@ public class TicketReservation {
         } catch(IllegalStateException e) {
         }
         return null;
+    }
+
+    @Override
+    public Optional<BigDecimal> getOptionalVatPercentage() {
+        return Optional.ofNullable(usedVatPercent);
     }
 }

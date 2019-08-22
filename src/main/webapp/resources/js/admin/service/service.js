@@ -34,7 +34,7 @@
         };
     });
 
-    baseServices.service("EventService", function($http, HttpErrorHandler, $uibModal, $window, $rootScope, $q, LocationService) {
+    baseServices.service("EventService", function($http, HttpErrorHandler, $uibModal, $window, $rootScope, $q, LocationService, $timeout) {
 
         function copyGeoLocation(event) {
             event.latitude = event.geolocation.latitude;
@@ -109,6 +109,29 @@
                     eventId: eventId
                 }).error(HttpErrorHandler.handle);
             },
+            deleteCategory: function(category, event) {
+
+                var modal = $uibModal.open({
+                    size:'md',
+                    templateUrl: '/resources/angular-templates/admin/partials/event/fragment/delete-category-modal.html',
+                    backdrop: 'static',
+                    controller: function($scope) {
+                        $scope.cancel = function() {
+                            modal.dismiss('canceled');
+                        };
+
+                        $scope.deleteCategory = function() {
+                            $http['delete']('/admin/api/events/'+event.shortName+'/category/'+category.id)
+                                .error(HttpErrorHandler.handle)
+                                .then(function() {
+                                    modal.close('OK');
+                                });
+                        };
+                        $scope.category = category;
+                    }
+                });
+                return modal.result;
+            },
             unbindTickets: function(event, category) {
                 return $http['put']('/admin/api/events/'+event.shortName+'/category/'+category.id+'/unbind-tickets').error(HttpErrorHandler.handle);
             },
@@ -132,8 +155,15 @@
             registerPayment: function(eventName, reservationId) {
                 return $http['post']('/admin/api/events/'+eventName+'/pending-payments/'+reservationId+'/confirm').error(HttpErrorHandler.handle);
             },
-            cancelPayment: function(eventName, reservationId) {
-                return $http['delete']('/admin/api/events/'+eventName+'/pending-payments/'+reservationId).error(HttpErrorHandler.handle);
+            cancelPayment: function(eventName, reservationId, credit) {
+                return $http['delete']('/admin/api/events/'+eventName+'/pending-payments/'+reservationId, {
+                    params: {
+                        credit: credit
+                    }
+                }).error(HttpErrorHandler.handle);
+            },
+            cancelMatchingPayment: function(eventName, reservationId, transactionId) {
+                return $http['delete']('/admin/api/events/'+eventName+'/reservation/'+reservationId+'/transaction/'+transactionId+'/discard').error(HttpErrorHandler.handle);
             },
             sendCodesByEmail: function(eventName, categoryId, pairs) {
                 return $http['post']('/admin/api/events/'+eventName+'/categories/'+categoryId+'/send-codes', pairs).error(HttpErrorHandler.handle);
@@ -157,7 +187,7 @@
                 return $http['get']('/admin/api/event/additional-field/templates').error(HttpErrorHandler.handle);
             },
             getMessagesPreview: function(eventName, categoryId, messages) {
-                var queryString = angular.isDefined(categoryId) && categoryId !== "" ? '?categoryId='+categoryId : '';
+                var queryString = angular.isNumber(categoryId) ? '?categoryId='+categoryId : '';
                 return $http['post']('/admin/api/events/'+eventName+'/messages/preview'+queryString, messages).error(HttpErrorHandler.handle);
             },
             sendMessages: function(eventName, categoryId, messages) {
@@ -168,7 +198,10 @@
                 return $http['get']('/admin/api/events/'+eventName+'/fields');
             },
             getAdditionalFields: function(eventName) {
-                return $http.get('/admin/api/events/'+eventName+'/additional-field');
+                return $http.get('/admin/api/events/'+eventName+'/additional-field').error(HttpErrorHandler.handle);
+            },
+            getRestrictedValuesStats: function(eventName, id) {
+                return $http.get('/admin/api/events/'+eventName+'/additional-field/'+id+'/stats').error(HttpErrorHandler.handle);
             },
             saveFieldDescription: function(eventName, fieldDescription) {
                 return $http.post('/admin/api/events/'+eventName+'/additional-field/descriptions', fieldDescription);
@@ -194,7 +227,14 @@
             	return $http['delete']('/admin/api/events/'+eventName+'/additional-field/'+id);
             },
             swapFieldPosition: function(eventName, id1, id2) {
-            	return $http.post('/admin/api/events/'+eventName+'/additional-field/swap-position/'+id1+'/'+id2);
+            	return $http.post('/admin/api/events/'+eventName+'/additional-field/swap-position/'+id1+'/'+id2, null);
+            },
+            moveField: function(eventName, id, position) {
+                return $http.post('/admin/api/events/'+eventName+'/additional-field/set-position/'+id, null, {
+                    params: {
+                        newPosition: position
+                    }
+                });
             },
             getAllReservationStatus : function(eventName) {
                 return $http.get('/admin/api/reservation/event/'+eventName+'/reservations/all-status');
@@ -230,6 +270,7 @@
                     backdrop: 'static',
                     controller: function($scope) {
                         $scope.selected = {};
+                        $scope.format = 'excel';
                         service.getFields(event.shortName).then(function(fields) {
                             $scope.fields = fields.data;
                             angular.forEach(fields.data, function(v) {
@@ -250,29 +291,34 @@
                         };
 
                         $scope.download = function() {
-                            var queryString = "";
+                            var queryString = "format="+$scope.format+"&";
                             angular.forEach($scope.selected, function(v,k) {
                                 if(v) {
                                     queryString+="fields="+k+"&";
                                 }
                             });
-                            $window.open($window.location.pathname+"/api/events/"+event.shortName+"/export.csv?"+queryString);
+                            var pathName = $window.location.pathname;
+                            if(!pathName.endsWith("/")) {
+                                pathName = pathName + "/";
+                            }
+                            $window.open(pathName+"api/events/"+event.shortName+"/export.csv?"+queryString);
                         };
                     }
                 });
             },
 
-            cancelReservationModal: function(event, reservationId) {
+            cancelReservationModal: function(event, reservationId, credit) {
                 var deferred = $q.defer();
                 var promise = deferred.promise;
 
                 var modal = $uibModal.open({
                     size:'lg',
-                    template:'<reservation-cancel event="event" reservation-id="reservationId" on-success="success()" on-cancel="close()"></reservation-cancel>',
+                    template:'<reservation-cancel event="event" reservation-id="reservationId" on-success="success()" on-cancel="close()" credit="credit"></reservation-cancel>',
                     backdrop: 'static',
                     controller: function($scope) {
                         $scope.event = event;
                         $scope.reservationId = reservationId;
+                        $scope.credit = credit;
                         $scope.close = function() {
                             $scope.$close(false);
                             deferred.reject();
@@ -313,20 +359,81 @@
                 return promise;
             },
 
-            removeTickets: function(eventName, reservationId, ticketIds, ticketIdsToRefund, notify) {
-                return $http.post('/admin/api/reservation/event/'+eventName+'/'+reservationId+'/remove-tickets', {ticketIds: ticketIds, refundTo: ticketIdsToRefund, notify : notify});
+            removeTickets: function(eventName, reservationId, ticketIds, ticketIdsToRefund, notify, updateInvoice) {
+                return $http.post('/admin/api/reservation/event/'+eventName+'/'+reservationId+'/remove-tickets', {ticketIds: ticketIds, refundTo: ticketIdsToRefund, notify : notify, forceInvoiceUpdate: updateInvoice});
             },
 
-            cancelReservation: function(eventName, reservationId, refund, notify) {
-                return $http.post('/admin/api/reservation/event/'+eventName+'/'+reservationId+'/cancel?refund=' + refund+"&notify="+notify);
+            cancelReservation: function(eventName, reservationId, refund, notify, credit) {
+                var operation = credit ? 'credit' : 'cancel';
+                return $http.post('/admin/api/reservation/event/'+eventName+'/'+reservationId+'/'+operation, null, {
+                    params: {
+                        refund: refund,
+                        notify: notify
+                    }
+                });
             },
 
             countInvoices: function(eventName) {
                 return $http.get('/admin/api/events/'+eventName+'/invoices/count').error(HttpErrorHandler.handle);
             },
 
-            getSoldStatistics: function(eventName, from, to) {
+            getTicketsStatistics: function(eventName, from, to) {
                 return $http.get('/admin/api/events/'+eventName+'/ticket-sold-statistics', {params: {from: from, to: to}});
+            },
+
+            rearrangeCategories: function(event) {
+                var modal = $uibModal.open({
+                    size:'lg',
+                    templateUrl:'/resources/angular-templates/admin/partials/event/rearrange-categories.html',
+                    backdrop: 'static',
+                    controller: function($scope) {
+                        var ctrl = this;
+                        ctrl.event = event;
+                        var setOrdinal = function(categories) {
+                            for(var i=0, o=1; i < categories.length; i++, o++) {
+                                var category = categories[i];
+                                category.ordinal = o;
+                            }
+                            return categories;
+                        };
+                        ctrl.categories = event.ticketCategories.map(function(category) {
+                            return {
+                                id: category.id,
+                                name: category.name,
+                                ordinal: category.ordinal
+                            };
+                        });
+                        ctrl.sortedCategories = setOrdinal(_.sortByAll(ctrl.categories, ['ordinal', 'formattedInception', 'id']));
+                        $scope.$on('categories-bag.drop', function (e, el) {
+                            $timeout(function() {
+                                ctrl.sortedCategories = setOrdinal(ctrl.sortedCategories);
+                            }, 10);
+                        });
+                        ctrl.swap = function(index, category, up) {
+                            var list = ctrl.sortedCategories.slice();
+                            var target = up ? index - 1 : index + 1;
+                            var toBeSwapped = list[target];
+                            list[target] = category;
+                            list[index] = toBeSwapped;
+                            ctrl.sortedCategories.length = 0;
+                            for(var i=0; i<list.length; i++) {
+                                ctrl.sortedCategories.push(list[i]);
+                            }
+                            setOrdinal(ctrl.sortedCategories);
+                        };
+                        ctrl.save = function() {
+                            $scope.$close(ctrl.sortedCategories);
+                        };
+                        ctrl.dismiss = function() {
+                            $scope.$dismiss(false);
+                        }
+
+                    },
+                    controllerAs:'$ctrl'
+                });
+                return modal.result.then(function(categories) {
+                    return $http.put('/admin/api/events/'+event.shortName+'/rearrange-categories', categories).error(HttpErrorHandler.handle);
+                });
             }
         };
         return service;
@@ -400,7 +507,6 @@
                     var location = view[0].Result[0].Location;
                     var pos = location.DisplayPosition;
                     var ret = {latitude: pos.Latitude, longitude: pos.Longitude};
-                    console.log(view);
 
                     $q.all([getMapUrl(ret.latitude, ret.longitude), locService.getTimezone(ret.latitude, ret.longitude)]).then(function(success) {
                         ret.mapUrl = success[0];
@@ -438,7 +544,7 @@
                         } else if (apiKeyAndProvider.provider === 'HERE') {
                             handleHEREGeolocate(location, locService, apiKeyAndProvider, resolve, reject);
                         } else {
-                            alert('Must provide an API key (google or HERE maps)')
+                            resolve({latitude: null, longitude: null});
                         }
                     })
 
@@ -649,10 +755,14 @@
         };
     }]);
 
-    baseServices.service("FileUploadService", function($http) {
+    baseServices.service("FileUploadService", function($http, HttpErrorHandler) {
         return {
             upload : function(file) {
-                return $http['post']('/admin/api/file/upload', file);
+                return $http['post']('/admin/api/file/upload', file).error(HttpErrorHandler.handle);
+            },
+
+            uploadImageWithResize: function(file) {
+                return $http['post']('/admin/api/file/upload?resizeImage=true', file).error(HttpErrorHandler.handle);
             }
         };
     });
@@ -702,4 +812,22 @@
             }
         };
     }]);
+
+    baseServices.service('CountriesService', ['$http', 'HttpErrorHandler', '$q', function($http, HttpErrorHandler) {
+        var request = $http.get('/admin/api/utils/countriesForVat').then(function(res) {
+            return res.data;
+        }, HttpErrorHandler.handle);
+        return {
+            getCountries: function() {
+                return request;
+            },
+
+            getDescription: function(countryCode) {
+                return request.then(function(countries) {
+                    return countries[countryCode] || countryCode;
+                });
+            }
+
+        };
+    }])
 })();

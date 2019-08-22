@@ -16,32 +16,33 @@
  */
 package alfio.controller.api.admin;
 
-import alfio.controller.api.support.DescriptionsLoader;
 import alfio.controller.api.support.EventListItem;
 import alfio.controller.api.support.PageAndContent;
 import alfio.controller.api.support.TicketHelper;
 import alfio.controller.support.TemplateProcessor;
 import alfio.manager.*;
 import alfio.manager.i18n.I18nManager;
+import alfio.manager.system.ConfigurationManager;
 import alfio.manager.user.UserManager;
 import alfio.model.*;
+import alfio.model.TicketReservationInvoicingAdditionalInfo.ItalianEInvoicing;
 import alfio.model.modification.*;
 import alfio.model.result.ValidationResult;
+import alfio.model.transaction.Transaction;
 import alfio.model.user.Organization;
 import alfio.model.user.Role;
+import alfio.model.user.User;
 import alfio.repository.DynamicFieldTemplateRepository;
+import alfio.repository.EventDescriptionRepository;
 import alfio.repository.SponsorScanRepository;
-import alfio.repository.TicketCategoryDescriptionRepository;
 import alfio.repository.TicketFieldRepository;
-import alfio.util.Json;
-import alfio.util.MonetaryUtil;
-import alfio.util.TemplateManager;
-import alfio.util.Validator;
+import alfio.util.*;
 import com.opencsv.CSVReader;
-import com.opencsv.CSVWriter;
 import lombok.AllArgsConstructor;
+import lombok.Data;
 import lombok.Getter;
 import lombok.extern.log4j.Log4j2;
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Validate;
 import org.apache.commons.lang3.time.DateUtils;
@@ -50,18 +51,15 @@ import org.apache.commons.lang3.tuple.Triple;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.ui.Model;
 import org.springframework.util.StreamUtils;
 import org.springframework.validation.Errors;
 import org.springframework.web.bind.annotation.*;
 
-import javax.servlet.ServletOutputStream;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.io.OutputStreamWriter;
 import java.math.BigDecimal;
 import java.security.Principal;
 import java.text.DateFormat;
@@ -73,13 +71,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import static alfio.util.OptionalWrapper.optionally;
 import static alfio.util.Validator.*;
+import static alfio.util.Wrappers.optionally;
 import static java.util.stream.Collectors.toList;
-import static org.springframework.web.bind.annotation.RequestMethod.*;
+import static org.apache.commons.lang3.StringUtils.defaultString;
 
 @RestController
 @RequestMapping("/admin/api")
@@ -93,9 +92,8 @@ public class EventApiController {
     private final EventStatisticsManager eventStatisticsManager;
     private final I18nManager i18nManager;
     private final TicketReservationManager ticketReservationManager;
-    private final TicketCategoryDescriptionRepository ticketCategoryDescriptionRepository;
     private final TicketFieldRepository ticketFieldRepository;
-    private final DescriptionsLoader descriptionsLoader;
+    private final EventDescriptionRepository eventDescriptionRepository;
     private final TicketHelper ticketHelper;
     private final DynamicFieldTemplateRepository dynamicFieldTemplateRepository;
     private final UserManager userManager;
@@ -103,6 +101,8 @@ public class EventApiController {
     private final PaymentManager paymentManager;
     private final TemplateManager templateManager;
     private final FileUploadManager fileUploadManager;
+    private final ConfigurationManager configurationManager;
+    private final ExtensionManager extensionManager;
 
 
     private static final String ID = "ID";
@@ -134,16 +134,14 @@ public class EventApiController {
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public String unhandledException(Exception e) {
-        if(!IllegalArgumentException.class.isInstance(e)) {
-            log.warn("unhandled exception", e);
-        }
+        log.warn("unhandled exception", e);
         return e.getMessage();
     }
 
 
-    @RequestMapping(value = "/paymentProxies/{organizationId}", method = GET)
+    @GetMapping("/paymentProxies/{organizationId}")
     @ResponseStatus(HttpStatus.OK)
-    public List<PaymentManager.PaymentMethod> getPaymentProxies(@PathVariable("organizationId") int organizationId, Principal principal) {
+    public List<PaymentManager.PaymentMethodDTO> getPaymentProxies( @PathVariable("organizationId") int organizationId, Principal principal) {
         return userManager.findUserOrganizations(principal.getName())
             .stream()
             .filter(o -> o.getId() == organizationId)
@@ -152,27 +150,27 @@ public class EventApiController {
             .orElse(Collections.emptyList());
     }
 
-    @RequestMapping(value = "/events", method = GET, headers = "Authorization")
+    @GetMapping(value = "/events", headers = "Authorization")
     public List<EventListItem> getAllEventsForExternal(Principal principal, HttpServletRequest request) {
         List<Integer> userOrganizations = userManager.findUserOrganizations(principal.getName()).stream().map(Organization::getId).collect(toList());
         return eventManager.getActiveEvents().stream()
             .filter(e -> userOrganizations.contains(e.getOrganizationId()))
             .sorted(Comparator.comparing(e -> e.getBegin().withZoneSameInstant(ZoneId.systemDefault())))
-            .map(s -> new EventListItem(s, request.getContextPath(), descriptionsLoader.eventDescriptions()))
+            .map(s -> new EventListItem(s, request.getContextPath(), eventDescriptionRepository.findByEventId(s.getId())))
             .collect(toList());
     }
 
-    @RequestMapping(value = "/events", method = GET)
+    @GetMapping("/events")
     public List<EventStatistic> getAllEvents(Principal principal) {
         return eventStatisticsManager.getAllEventsWithStatistics(principal.getName());
     }
 
-    @RequestMapping(value = "/active-events", method = GET)
+    @GetMapping("/active-events")
     public List<EventStatistic> getAllActiveEvents(Principal principal) {
         return eventStatisticsManager.getAllEventsWithStatisticsFilteredBy(principal.getName(), event -> !event.expiredSince(14));
     }
 
-    @RequestMapping(value = "/expired-events", method = GET)
+    @GetMapping("/expired-events")
     public List<EventStatistic> getAllExpiredEvents(Principal principal) {
         return eventStatisticsManager.getAllEventsWithStatisticsFilteredBy(principal.getName(), event -> event.expiredSince(14));
     }
@@ -186,7 +184,7 @@ public class EventApiController {
     }
 
 
-    @RequestMapping(value = "/events/{name}", method = GET)
+    @GetMapping("/events/{name}")
     public ResponseEntity<EventAndOrganization> getSingleEvent(@PathVariable("name") String eventName, Principal principal) {
         final String username = principal.getName();
         return optionally(() -> eventStatisticsManager.getEventWithAdditionalInfo(eventName, username))
@@ -196,19 +194,24 @@ public class EventApiController {
             }).orElseGet(() -> new ResponseEntity<>(HttpStatus.NOT_FOUND));
     }
     
-    @RequestMapping(value ="/events/{eventId}", method = DELETE)
+    @DeleteMapping("/events/{eventId}")
     public void deleteEvent(@PathVariable("eventId") int eventId, Principal principal) {
     	eventManager.deleteEvent(eventId, principal.getName());
     }
 
-    @RequestMapping(value = "/events/id/{eventId}", method = GET)
+    @GetMapping("/events/id/{eventId}")
     public Event getSingleEventById(@PathVariable("eventId") int eventId, Principal principal) {
         return eventManager.getSingleEventById(eventId, principal.getName());
     }
 
-    @RequestMapping(value = "/events/check", method = POST)
-    public ValidationResult validateEvent(@RequestBody EventModification eventModification, Errors errors) {
+    @PostMapping("/events/check")
+    public ValidationResult validateEventRequest(@RequestBody EventModification eventModification, Errors errors) {
+        return validateEvent(eventModification,errors);
+    }
+
+    public static ValidationResult validateEvent(EventModification eventModification, Errors errors) {
         ValidationResult base = validateEventHeader(Optional.empty(), eventModification, errors)
+            .or(validateEventDates(eventModification, errors))
             .or(validateTicketCategories(eventModification, errors))
             .or(validateEventPrices(Optional.empty(), eventModification, errors))
             .or(eventModification.getAdditionalServices().stream().map(as -> validateAdditionalService(as, eventModification, errors)).reduce(ValidationResult::or).orElse(ValidationResult.success()));
@@ -220,7 +223,8 @@ public class EventApiController {
             .or(validateAdditionalTicketFields(eventModification.getTicketFields(), errors));
     }
 
-    private ValidationResult validateAdditionalTicketFields(List<EventModification.AdditionalField> ticketFields, Errors errors) {
+
+    private static ValidationResult validateAdditionalTicketFields(List<EventModification.AdditionalField> ticketFields, Errors errors) {
         //meh
         AtomicInteger cnt = new AtomicInteger();
         return Optional.ofNullable(ticketFields).orElseGet(Collections::emptyList).stream().map(field -> {
@@ -235,72 +239,111 @@ public class EventApiController {
         }).reduce(ValidationResult::or).orElseGet(ValidationResult::success);
     }
 
-    @RequestMapping(value = "/events/new", method = POST)
+    @PostMapping("/events/new")
     public String insertEvent(@RequestBody EventModification eventModification) {
         eventManager.createEvent(eventModification);
         return OK;
     }
 
-    @RequestMapping(value = "/events/{id}/status", method = PUT)
+    @PutMapping("/events/{id}/status")
     public String activateEvent(@PathVariable("id") int id, @RequestParam("active") boolean active, Principal principal) {
         eventManager.toggleActiveFlag(id, principal.getName(), active);
         return OK;
     }
 
-    @RequestMapping(value = "/events/{id}/header/update", method = POST)
+    @PostMapping("/events/{id}/header/update")
     public ValidationResult updateHeader(@PathVariable("id") int id, @RequestBody EventModification eventModification, Errors errors,  Principal principal) {
         Event event = eventManager.getSingleEventById(id, principal.getName());
         return validateEventHeader(Optional.of(event), eventModification, errors).ifSuccess(() -> eventManager.updateEventHeader(event, eventModification, principal.getName()));
     }
 
-    @RequestMapping(value = "/events/{id}/prices/update", method = POST)
+    @PostMapping("/events/{id}/prices/update")
     public ValidationResult updatePrices(@PathVariable("id") int id, @RequestBody EventModification eventModification, Errors errors,  Principal principal) {
         Event event = eventManager.getSingleEventById(id, principal.getName());
         return validateEventPrices(Optional.of(event), eventModification, errors).ifSuccess(() -> eventManager.updateEventPrices(event, eventModification, principal.getName()));
     }
 
-    @RequestMapping(value = "/events/{eventId}/categories/{categoryId}/update", method = POST)
+    @PostMapping("/events/{eventId}/categories/{categoryId}/update")
     public ValidationResult updateExistingCategory(@PathVariable("eventId") int eventId, @PathVariable("categoryId") int categoryId, @RequestBody TicketCategoryModification category, Errors errors, Principal principal) {
         return validateCategory(category, errors).ifSuccess(() -> eventManager.updateCategory(categoryId, eventId, category, principal.getName()));
     }
 
-    @RequestMapping(value = "/events/{eventId}/categories/new", method = POST)
+    @PostMapping("/events/{eventId}/categories/new")
     public ValidationResult createCategory(@PathVariable("eventId") int eventId, @RequestBody TicketCategoryModification category, Errors errors, Principal principal) {
         return validateCategory(category, errors).ifSuccess(() -> eventManager.insertCategory(eventId, category, principal.getName()));
     }
     
-    @RequestMapping(value = "/events/reallocate", method = PUT)
+    @PutMapping("/events/reallocate")
     public String reallocateTickets(@RequestBody TicketAllocationModification form) {
         eventManager.reallocateTickets(form.getSrcCategoryId(), form.getTargetCategoryId(), form.getEventId());
         return OK;
     }
 
-    @RequestMapping(value = "/events/{eventName}/category/{categoryId}/unbind-tickets", method = PUT)
+    @PutMapping("/events/{eventName}/category/{categoryId}/unbind-tickets")
     public String unbindTickets(@PathVariable("eventName") String eventName, @PathVariable("categoryId") int categoryId, Principal principal) {
         eventManager.unbindTickets(eventName, categoryId, principal.getName());
         return OK;
     }
 
+<<<<<<< HEAD
     private static final List<String> FIXED_FIELDS = Arrays.asList(ID, CREATION, CATEGORY, EVENT, STATUS, ORIGINAL_PRICE, PAID_PRICE, DISCOUNT, VAT, RESERVATION_ID, FULL_NAME, FIRST_NAME, LAST_NAME, E_MAIL, LOCKED, LANGUAGE, CONFIRMATION, BILLING_ADDRESS);
     private static final int[] BOM_MARKERS = new int[] {0xEF, 0xBB, 0xBF};
+=======
+    @DeleteMapping("/events/{eventName}/category/{categoryId}")
+    public String deleteCategory(@PathVariable("eventName") String eventName, @PathVariable("categoryId") int categoryId, Principal principal) {
+        eventManager.deleteCategory(eventName, categoryId, principal.getName());
+        return OK;
+    }
 
-    @RequestMapping("/events/{eventName}/export.csv")
-    public void downloadAllTicketsCSV(@PathVariable("eventName") String eventName, HttpServletRequest request, HttpServletResponse response, Principal principal) throws IOException {
+    @PutMapping("/events/{eventName}/rearrange-categories")
+    public ResponseEntity<String> rearrangeCategories(@PathVariable("eventName") String eventName, @RequestBody List<CategoryOrdinalModification> categories, Principal principal) {
+        if(CollectionUtils.isEmpty(categories)) {
+            return ResponseEntity.badRequest().build();
+        }
+        eventManager.rearrangeCategories(eventName, categories, principal.getName());
+        return ResponseEntity.ok(OK);
+    }
+
+    private static final List<String> FIXED_FIELDS = Arrays.asList("ID", "Creation", "Category", "Event", "Status", "OriginalPrice", "PaidPrice", "Discount", "VAT", "ReservationID", "Full Name", "First Name", "Last Name", "E-Mail", "Locked", "Language", "Confirmation", "Billing Address", "Payment ID", "Payment Method");
+    private static final List<SerializablePair<String, String>> FIXED_PAIRS = FIXED_FIELDS.stream().map(f -> SerializablePair.of(f, f)).collect(toList());
+    private static final List<String> ITALIAN_E_INVOICING_FIELDS = List.of("Fiscal Code", "Reference Type", "Addressee Code", "PEC");
+>>>>>>> 9c29352619b652bf15a42916a49e03042d48218d
+
+    @GetMapping("/events/{eventName}/export")
+    public void downloadAllTicketsCSV(@PathVariable("eventName") String eventName, @RequestParam(name = "format", defaultValue = "excel") String format, HttpServletRequest request, HttpServletResponse response, Principal principal) throws IOException {
         List<String> fields = Arrays.asList(Optional.ofNullable(request.getParameterValues("fields")).orElse(new String[] {}));
         Event event = loadEvent(eventName, principal);
         Map<Integer, TicketCategory> categoriesMap = eventManager.loadTicketCategories(event).stream().collect(Collectors.toMap(TicketCategory::getId, Function.identity()));
         ZoneId eventZoneId = event.getZoneId();
 
-        Predicate<String> contains = FIXED_FIELDS::contains;
+        if ("excel".equals(format)) {
+            exportTicketExcel(event.getShortName(), response, principal, fields, categoriesMap, eventZoneId);
+        } else {
+            exportTicketCSV(event.getShortName(), response, principal, fields, categoriesMap, eventZoneId);
+        }
+    }
 
-        response.setContentType("text/csv;charset=UTF-8");
-        response.setHeader("Content-Disposition", "attachment; filename=" + eventName + "-export.csv");
+    private void exportTicketExcel(String eventName, HttpServletResponse response, Principal principal, List<String> fields, Map<Integer,TicketCategory> categoriesMap, ZoneId eventZoneId) throws IOException {
+        ExportUtils.exportExcel(eventName + "-export.xlsx",
+            eventName + " export",
+            exportHeader(fields),
+            exportLines(eventName, principal, fields, categoriesMap, eventZoneId), response);
 
-        try(ServletOutputStream out = response.getOutputStream(); CSVWriter writer = new CSVWriter(new OutputStreamWriter(out))) {
+    }
 
-            for (int marker : BOM_MARKERS) {//UGLY-MODE_ON: specify that the file is written in UTF-8 with BOM, thanks to alexr http://stackoverflow.com/a/4192897
-                out.write(marker);
+    private void exportTicketCSV(String eventName, HttpServletResponse response,
+                           Principal principal, List<String> fields,
+                           Map<Integer, TicketCategory> categoriesMap,
+                           ZoneId eventZoneId) throws IOException {
+        ExportUtils.exportCsv(eventName + "-export.csv", exportHeader(fields), exportLines(eventName, principal, fields, categoriesMap, eventZoneId), response);
+    }
+
+    private String[] exportHeader(List<String> fields) {
+        return fields.stream().map(f -> {
+            if(f.startsWith(CUSTOM_FIELDS_PREFIX)) {
+                return f.substring(CUSTOM_FIELDS_PREFIX.length());
             }
+<<<<<<< HEAD
             
             writer.writeNext(fields.stream().map(f -> {
                 if(f.startsWith(CUSTOM_FIELDS_PREFIX)) {
@@ -343,63 +386,139 @@ public class EventApiController {
             writer.flush();
             out.flush();
         }
+=======
+            return f;
+        }).toArray(String[]::new);
     }
 
-    @RequestMapping("/events/{eventName}/sponsor-scan/export.csv")
-    public void downloadSponsorScanExport(@PathVariable("eventName") String eventName, HttpServletResponse response, Principal principal) throws IOException {
-        Event event = loadEvent(eventName, principal);
+    private Stream<String[]> exportLines(String eventName, Principal principal, List<String> fields, Map<Integer, TicketCategory> categoriesMap, ZoneId eventZoneId) {
+        var username = principal.getName();
+        var eInvoicingEnabled = configurationManager.isItalianEInvoicingEnabled(eventManager.getEventAndOrganizationId(eventName, username));
+
+        return eventManager.findAllConfirmedTicketsForCSV(eventName, username).stream().map(trs -> {
+            Ticket t = trs.getTicket();
+            var currencyCode = t.getCurrencyCode();
+            TicketReservation reservation = trs.getTicketReservation();
+            List<String> line = new ArrayList<>();
+            if(fields.contains("ID")) {line.add(t.getUuid());}
+            if(fields.contains("Creation")) {line.add(t.getCreation().withZoneSameInstant(eventZoneId).toString());}
+            if(fields.contains("Category")) {line.add(categoriesMap.get(t.getCategoryId()).getName());}
+            if(fields.contains("Event")) {line.add(eventName);}
+            if(fields.contains("Status")) {line.add(t.getStatus().toString());}
+            if(fields.contains("OriginalPrice")) {line.add(MonetaryUtil.centsToUnit(t.getSrcPriceCts(), currencyCode).toString());}
+            if(fields.contains("PaidPrice")) {line.add(MonetaryUtil.centsToUnit(t.getFinalPriceCts(), currencyCode).toString());}
+            if(fields.contains("Discount")) {line.add(MonetaryUtil.centsToUnit(t.getDiscountCts(), currencyCode).toString());}
+            if(fields.contains("VAT")) {line.add(MonetaryUtil.centsToUnit(t.getVatCts(), currencyCode).toString());}
+            if(fields.contains("ReservationID")) {line.add(t.getTicketsReservationId());}
+            if(fields.contains("Full Name")) {line.add(t.getFullName());}
+            if(fields.contains("First Name")) {line.add(t.getFirstName());}
+            if(fields.contains("Last Name")) {line.add(t.getLastName());}
+            if(fields.contains("E-Mail")) {line.add(t.getEmail());}
+            if(fields.contains("Locked")) {line.add(String.valueOf(t.getLockedAssignment()));}
+            if(fields.contains("Language")) {line.add(String.valueOf(t.getUserLanguage()));}
+            if(fields.contains("Confirmation")) {line.add(reservation.getConfirmationTimestamp().withZoneSameInstant(eventZoneId).toString());}
+            if(fields.contains("Billing Address")) {line.add(reservation.getBillingAddress());}
+            boolean paymentIdRequested = fields.contains("Payment ID");
+            boolean paymentGatewayRequested = fields.contains("Payment Method");
+            if((paymentIdRequested || paymentGatewayRequested)) {
+                Optional<Transaction> transaction = trs.getTransaction();
+                if(paymentIdRequested) { line.add(defaultString(transaction.map(Transaction::getPaymentId).orElse(null), transaction.map(Transaction::getTransactionId).orElse(""))); }
+                if(paymentGatewayRequested) { line.add(transaction.map(tr -> tr.getPaymentProxy().name()).orElse("")); }
+            }
+
+            if(eInvoicingEnabled) {
+                var billingDetails = trs.getBillingDetails();
+                var optionalInvoicingData = Optional.ofNullable(billingDetails.getInvoicingAdditionalInfo()).map(TicketReservationInvoicingAdditionalInfo::getItalianEInvoicing);
+                if(fields.contains("Fiscal Code")) {line.add(optionalInvoicingData.map(ItalianEInvoicing::getFiscalCode).orElse(""));}
+                if(fields.contains("Reference Type")) {line.add(optionalInvoicingData.map(ItalianEInvoicing::getReferenceTypeAsString).orElse(""));}
+                if(fields.contains("Addressee Code")) {line.add(optionalInvoicingData.map(ItalianEInvoicing::getAddresseeCode).orElse(""));}
+                if(fields.contains("PEC")) {line.add(optionalInvoicingData.map(ItalianEInvoicing::getPec).orElse(""));}
+            }
+
+            //obviously not optimized
+            Map<String, String> additionalValues = ticketFieldRepository.findAllValuesForTicketId(t.getId());
+
+            Predicate<String> contains = FIXED_FIELDS::contains;
+
+            fields.stream().filter(contains.negate()).filter(f -> f.startsWith(CUSTOM_FIELDS_PREFIX)).forEachOrdered(field -> {
+                String customFieldName = field.substring(CUSTOM_FIELDS_PREFIX.length());
+                line.add(additionalValues.getOrDefault(customFieldName, "").replaceAll("\"", ""));
+            });
+
+            return line.toArray(new String[0]);
+        });
+>>>>>>> 9c29352619b652bf15a42916a49e03042d48218d
+    }
+
+    @GetMapping("/events/{eventName}/sponsor-scan/export")
+    public void downloadSponsorScanExport(@PathVariable("eventName") String eventName, @RequestParam(name = "format", defaultValue = "excel") String format, HttpServletResponse response, Principal principal) throws IOException {
+        var event = eventManager.getSingleEvent(eventName, principal.getName());
         List<TicketFieldConfiguration> fields = ticketFieldRepository.findAdditionalFieldsForEvent(event.getId());
 
-        response.setContentType("text/csv;charset=UTF-8");
-        response.setHeader("Content-Disposition", "attachment; filename=" + eventName + "-sponsor-scan.csv");
+        List<String> header = new ArrayList<>();
+        header.add("Username/Api Key");
+        header.add("Description");
+        header.add("Timestamp");
+        header.add("Full name");
+        header.add("Email");
+        header.addAll(fields.stream().map(TicketFieldConfiguration::getName).collect(toList()));
 
-        try(ServletOutputStream out = response.getOutputStream(); CSVWriter writer = new CSVWriter(new OutputStreamWriter(out))) {
-            for (int marker : BOM_MARKERS) {
-                out.write(marker);
-            }
-            
-            List<String> header = new ArrayList<>();
-            header.add("Username");
-            header.add("Timestamp");
-            header.add("Full name");
-            header.add("Email");
-            header.addAll(fields.stream().map(TicketFieldConfiguration::getName).collect(toList()));
-            writer.writeNext(header.toArray(new String[header.size()]));
-            userManager.findAllEnabledUsers(principal.getName()).stream()
-                .map(u -> Pair.of(u, userManager.getUserRole(u)))
-                .filter(p -> p.getRight() == Role.SPONSOR)
-                .flatMap(p -> sponsorScanRepository.loadSponsorData(event.getId(), p.getKey().getId(), SponsorScanRepository.DEFAULT_TIMESTAMP)
-                    .stream()
-                    .map(v -> Pair.of(v, ticketFieldRepository.findAllValuesForTicketId(v.getTicket().getId()))))
-                .map(p -> {
-                    DetailedScanData data = p.getLeft();
-                    Map<String, String> descriptions = p.getRight();
-                    return Pair.of(data, fields.stream().map(x -> descriptions.getOrDefault(x.getName(), "")).collect(toList()));
-                }).map(p -> {
-                    List<String> line = new ArrayList<>();
-                    Ticket ticket = p.getLeft().getTicket();
-                    SponsorScan sponsorScan = p.getLeft().getSponsorScan();
-                    line.add(userManager.findUser(sponsorScan.getUserId()).getUsername());
-                    line.add(sponsorScan.getTimestamp().toString());
-                    line.add(ticket.getFullName());
-                    line.add(ticket.getEmail());
-                    line.addAll(p.getRight());
-                    return line.toArray(new String[line.size()]);
-                }).forEachOrdered(writer::writeNext);
-            writer.flush();
-            out.flush();
+        Stream<String[]> sponsorScans = userManager.findAllEnabledUsers(principal.getName()).stream()
+            .map(u -> Pair.of(u, userManager.getUserRole(u)))
+            .filter(p -> p.getRight() == Role.SPONSOR)
+            .flatMap(p -> sponsorScanRepository.loadSponsorData(event.getId(), p.getKey().getId(), SponsorScanRepository.DEFAULT_TIMESTAMP)
+                .stream()
+                .map(v -> Pair.of(v, ticketFieldRepository.findAllValuesForTicketId(v.getTicket().getId()))))
+            .map(p -> {
+                DetailedScanData data = p.getLeft();
+                Map<String, String> descriptions = p.getRight();
+                return Pair.of(data, fields.stream().map(x -> descriptions.getOrDefault(x.getName(), "")).collect(toList()));
+            }).map(p -> {
+            List<String> line = new ArrayList<>();
+            Ticket ticket = p.getLeft().getTicket();
+            SponsorScan sponsorScan = p.getLeft().getSponsorScan();
+            User user = userManager.findUser(sponsorScan.getUserId());
+            line.add(user.getUsername());
+            line.add(user.getDescription());
+            line.add(sponsorScan.getTimestamp().toString());
+            line.add(ticket.getFullName());
+            line.add(ticket.getEmail());
+            line.addAll(p.getRight());
+            return line.toArray(new String[0]);
+        });
+
+        if ("excel".equals(format)) {
+            exportSponsorScanExcel(event.getShortName(), header, sponsorScans, response);
+        } else {
+            exportSponsorScanCSV(event.getShortName(), header, sponsorScans, response);
         }
     }
 
-    @RequestMapping("/events/{eventName}/fields")
-    public List<SerializablePair<String, String>> getAllFields(@PathVariable("eventName") String eventName) {
-        List<SerializablePair<String, String>> fields = new ArrayList<>();
-        fields.addAll(FIXED_FIELDS.stream().map(f -> SerializablePair.of(f, f)).collect(toList()));
+    private void exportSponsorScanExcel(String eventName, List<String> header, Stream<String[]> sponsorScans,
+                                        HttpServletResponse response) throws IOException {
+        ExportUtils.exportExcel(eventName + "-sponsor-scan.xlsx",
+            eventName + " sponsor scan",
+            header.toArray(new String[0]),
+            sponsorScans, response);
+    }
+
+    private void exportSponsorScanCSV(String eventName, List<String> header, Stream<String[]> sponsorScans,
+                                      HttpServletResponse response) throws IOException {
+        ExportUtils.exportCsv(eventName + "-sponsor-scan.csv", header.toArray(new String[0]), sponsorScans, response);
+    }
+
+    @GetMapping("/events/{eventName}/fields")
+    public List<SerializablePair<String, String>> getAllFields(@PathVariable("eventName") String eventName, Principal principal) {
+        var eventAndOrganizationId = eventManager.getEventAndOrganizationId(eventName, principal.getName());
+        List<SerializablePair<String, String>> fields = new ArrayList<>(FIXED_PAIRS);
+        if(configurationManager.isItalianEInvoicingEnabled(eventAndOrganizationId)) {
+            fields.addAll(ITALIAN_E_INVOICING_FIELDS.stream().map(f -> SerializablePair.of(f, f)).collect(toList()));
+        }
         fields.addAll(ticketFieldRepository.findFieldsForEvent(eventName).stream().map(f -> SerializablePair.of(CUSTOM_FIELDS_PREFIX + f, f)).collect(toList()));
         return fields;
     }
 
-    @RequestMapping("/events/{eventName}/additional-field")
+    @GetMapping("/events/{eventName}/additional-field")
     public List<TicketFieldConfigurationAndAllDescriptions> getAllAdditionalField(@PathVariable("eventName") String eventName) {
         final Map<Integer, List<TicketFieldDescription>> descById = ticketFieldRepository.findDescriptions(eventName).stream().collect(Collectors.groupingBy(TicketFieldDescription::getTicketFieldConfigurationId));
         return ticketFieldRepository.findAdditionalFieldsForEvent(eventName).stream()
@@ -407,75 +526,95 @@ public class EventApiController {
             .collect(toList());
     }
 
-    @RequestMapping(value = "/event/additional-field/templates", method = GET)
+    @GetMapping("/events/{eventName}/additional-field/{id}/stats")
+    public List<RestrictedValueStats> getStats(@PathVariable("eventName") String eventName, @PathVariable("id") Integer id, Principal principal) {
+        if(eventManager.getOptionalEventAndOrganizationIdByName(eventName, principal.getName()).filter(event -> ticketFieldRepository.findById(id).getEventId() == event.getId()).isEmpty()) {
+            return Collections.emptyList();
+        }
+        return ticketFieldRepository.retrieveStats(id);
+    }
+
+    @GetMapping("/event/additional-field/templates")
     public List<DynamicFieldTemplate> loadTemplates() {
         return dynamicFieldTemplateRepository.loadAll();
     }
 
-    @RequestMapping(value = "/events/{eventName}/additional-field/descriptions", method = POST)
+    @PostMapping("/events/{eventName}/additional-field/descriptions")
     public void saveAdditionalFieldDescriptions(@RequestBody Map<String, TicketFieldDescriptionModification> descriptions) {
         eventManager.updateTicketFieldDescriptions(descriptions);
     }
     
-    @RequestMapping(value = "/events/{eventName}/additional-field/new", method = POST)
+    @PostMapping("/events/{eventName}/additional-field/new")
     public ValidationResult addAdditionalField(@PathVariable("eventName") String eventName, @RequestBody EventModification.AdditionalField field, Principal principal, Errors errors) {
-        Event event = eventManager.getSingleEvent(eventName, principal.getName());
+        EventAndOrganizationId event = eventManager.getEventAndOrganizationId(eventName, principal.getName());
         List<TicketFieldConfiguration> fields = ticketFieldRepository.findAdditionalFieldsForEvent(event.getId());
         return validateAdditionalFields(fields, field, errors).ifSuccess(() -> eventManager.addAdditionalField(event, field));
     }
     
-    @RequestMapping(value = "/events/{eventName}/additional-field/swap-position/{id1}/{id2}", method = POST)
+    @PostMapping("/events/{eventName}/additional-field/swap-position/{id1}/{id2}")
     public void swapAdditionalFieldPosition(@PathVariable("eventName") String eventName, @PathVariable("id1") int id1, @PathVariable("id2") int id2, Principal principal) {
-    	Event event = eventManager.getSingleEvent(eventName, principal.getName());
+        EventAndOrganizationId event = eventManager.getEventAndOrganizationId(eventName, principal.getName());
     	eventManager.swapAdditionalFieldPosition(event.getId(), id1, id2);
     }
+
+    @PostMapping("/events/{eventName}/additional-field/set-position/{id}")
+    public void setAdditionalFieldPosition(@PathVariable("eventName") String eventName,
+                                           @PathVariable("id") int id,
+                                           @RequestParam("newPosition") int newPosition,
+                                           Principal principal) {
+        EventAndOrganizationId event = eventManager.getEventAndOrganizationId(eventName, principal.getName());
+        eventManager.setAdditionalFieldPosition(event.getId(), id, newPosition);
+    }
     
-    @RequestMapping(value = "/events/{eventName}/additional-field/{id}", method = DELETE)
+    @DeleteMapping("/events/{eventName}/additional-field/{id}")
     public void deleteAdditionalField(@PathVariable("eventName") String eventName, @PathVariable("id") int id, Principal principal) {
-        eventManager.getSingleEvent(eventName, principal.getName());
+        eventManager.getEventAndOrganizationId(eventName, principal.getName());
     	eventManager.deleteAdditionalField(id);
     }
 
-    @RequestMapping(value = "/events/{eventName}/additional-field/{id}", method = POST)
+    @PostMapping("/events/{eventName}/additional-field/{id}")
     public void updateAdditionalField(@PathVariable("eventName") String eventName, @PathVariable("id") int id, @RequestBody EventModification.UpdateAdditionalField field, Principal principal) {
-        eventManager.getSingleEvent(eventName, principal.getName());
+        eventManager.getEventAndOrganizationId(eventName, principal.getName());
         eventManager.updateAdditionalField(id, field);
     }
 
-    @RequestMapping(value = "/events/{eventName}/pending-payments")
-    public List<SerializablePair<TicketReservation, OrderSummary>> getPendingPayments(@PathVariable("eventName") String eventName, Principal principal) {
-        Event event = eventManager.getSingleEvent(eventName, principal.getName());
-        return ticketReservationManager.getPendingPayments(event).stream()
-                .map(SerializablePair::fromPair).collect(toList());
+
+
+    @GetMapping("/events/{eventName}/pending-payments")
+    public List<TicketReservationWithTransaction> getPendingPayments(@PathVariable("eventName") String eventName) {
+        return ticketReservationManager.getPendingPayments(eventName);
     }
 
-    @RequestMapping(value = "/events/{eventName}/pending-payments-count")
+    @GetMapping("/events/{eventName}/pending-payments-count")
     public Integer getPendingPaymentsCount(@PathVariable("eventName") String eventName, Principal principal) {
-        if(Optional.ofNullable(principal).map(Principal::getName).map(userManager::findUserByUsername).map(userManager::isOwner).orElse(false)) {
-            Event event = eventManager.getSingleEvent(eventName, principal.getName());
-            return ticketReservationManager.getPendingPaymentsCount(event.getId());
-        } else {
-            return 0;
-        }
+        return eventManager.getOptionalEventAndOrganizationIdByName(eventName, principal.getName())
+            .map(e -> ticketReservationManager.getPendingPaymentsCount(e.getId()))
+            .orElse(0);
     }
 
-    @RequestMapping(value = "/events/{eventName}/pending-payments/{reservationId}/confirm", method = POST)
-    public String confirmPayment(@PathVariable("eventName") String eventName, @PathVariable("reservationId") String reservationId, Principal principal,
-                                 Model model, HttpServletRequest request) {
-        ticketReservationManager.confirmOfflinePayment(loadEvent(eventName, principal), reservationId, principal.getName());
+    @PostMapping("/events/{eventName}/pending-payments/{reservationId}/confirm")
+    public String confirmPayment(@PathVariable("eventName") String eventName, @PathVariable("reservationId") String reservationId, Principal principal) {
+        var event = loadEvent(eventName, principal);
+        ticketReservationManager.confirmOfflinePayment(event, reservationId, principal.getName());
         ticketReservationManager.findById(reservationId)
             .filter(TicketReservation::isDirectAssignmentRequested)
-            .ifPresent(reservation -> ticketHelper.directTicketAssignment(eventName, reservationId, reservation.getEmail(), reservation.getFullName(), reservation.getFirstName(), reservation.getLastName(), reservation.getUserLanguage(), Optional.empty(), request, model));
+            .ifPresent(reservation -> {
+                Locale locale = LocaleUtil.forLanguageTag(reservation.getUserLanguage(), event);
+                ticketHelper.directTicketAssignment(eventName, reservationId, reservation.getEmail(), reservation.getFullName(), reservation.getFirstName(), reservation.getLastName(), reservation.getUserLanguage(), Optional.empty(), locale);
+            });
         return OK;
     }
 
-    @RequestMapping(value = "/events/{eventName}/pending-payments/{reservationId}", method = DELETE)
-    public String deletePendingPayment(@PathVariable("eventName") String eventName, @PathVariable("reservationId") String reservationId, Principal principal) {
-        ticketReservationManager.deleteOfflinePayment(loadEvent(eventName, principal), reservationId, false);
+    @DeleteMapping("/events/{eventName}/pending-payments/{reservationId}")
+    public String deletePendingPayment(@PathVariable("eventName") String eventName,
+                                       @PathVariable("reservationId") String reservationId,
+                                       @RequestParam(required = false, value = "credit", defaultValue = "false") Boolean creditReservation,
+                                       Principal principal) {
+        ticketReservationManager.deleteOfflinePayment(loadEvent(eventName, principal), reservationId, false, Boolean.TRUE.equals(creditReservation), principal.getName());
         return OK;
     }
 
-    @RequestMapping(value = "/events/{eventName}/pending-payments/bulk-confirmation", method = POST)
+    @PostMapping("/events/{eventName}/pending-payments/bulk-confirmation")
     public List<Triple<Boolean, String, String>> bulkConfirmation(@PathVariable("eventName") String eventName,
                                                                   Principal principal,
                                                                   @RequestBody UploadBase64FileModification file) throws IOException {
@@ -498,7 +637,7 @@ public class EventApiController {
         }
     }
 
-    @RequestMapping(value = "/events/{eventName}/categories/{categoryId}/tickets/{ticketId}/toggle-locking", method = PUT)
+    @PutMapping("/events/{eventName}/categories/{categoryId}/tickets/{ticketId}/toggle-locking")
     public boolean toggleTicketLocking(@PathVariable("eventName") String eventName,
                                        @PathVariable("categoryId") int categoryId,
                                        @PathVariable("ticketId") int ticketId,
@@ -506,74 +645,97 @@ public class EventApiController {
         return eventManager.toggleTicketLocking(eventName, categoryId, ticketId, principal.getName());
     }
 
-    @RequestMapping(value = "/events/{eventName}/languages", method = GET)
+    @GetMapping("/events/{eventName}/languages")
     public List<ContentLanguage> getAvailableLocales(@PathVariable("eventName") String eventName) {
         return i18nManager.getEventLanguages(eventName);
     }
 
-    @RequestMapping(value = "/events/{eventName}/invoices/count", method = GET)
+    @GetMapping("/events/{eventName}/invoices/count")
     public Integer countInvoicesForEvent(@PathVariable("eventName") String eventName, Principal principal) {
-        return optionally(() -> eventManager.getSingleEvent(eventName, principal.getName()))
+        return eventManager.getOptionalEventAndOrganizationIdByName(eventName, principal.getName())
             .map(e -> ticketReservationManager.countInvoices(e.getId()))
             .orElse(0);
     }
 
-    @RequestMapping(value = "/events/{eventName}/all-invoices", method = GET)
+    @GetMapping("/events/{eventName}/all-invoices")
     public void getAllInvoices(@PathVariable("eventName") String eventName, HttpServletResponse response, Principal principal) throws  IOException {
         Event event = loadEvent(eventName, principal);
 
         response.setContentType("application/zip");
-        response.setHeader("Content-Disposition", "attachment; filename=" + eventName + "-invoices.zip");
+        response.setHeader("Content-Disposition", "attachment; filename=" + event.getShortName() + "-invoices.zip");
 
         try(OutputStream os = response.getOutputStream(); ZipOutputStream zipOS = new ZipOutputStream(os)) {
-            for (TicketReservation reservation : ticketReservationManager.findAllInvoices(event.getId())) {
-                OrderSummary orderSummary = Json.fromJson(reservation.getInvoiceModel(), OrderSummary.class);
-                Optional<String> vat = Optional.ofNullable(orderSummary.getVatPercentage());
-                Map<String, Object> reservationModel = ticketReservationManager.prepareModelForReservationEmail(event, reservation, vat, orderSummary);
-                Optional<byte[]> pdf = TemplateProcessor.buildInvoicePdf(event, fileUploadManager, new Locale(reservation.getUserLanguage()), templateManager, reservationModel);
+            for (Pair<TicketReservation, BillingDocument> pair : ticketReservationManager.findAllInvoices(event.getId())) {
+                TicketReservation reservation = pair.getLeft();
+                BillingDocument document = pair.getRight();
+                Map<String, Object> reservationModel = document.getModel();
+                Optional<byte[]> pdf = TemplateProcessor.buildInvoicePdf(event, fileUploadManager, LocaleUtil.forLanguageTag(reservation.getUserLanguage()), templateManager, reservationModel, extensionManager);
 
                 if(pdf.isPresent()) {
-                    zipOS.putNextEntry(new ZipEntry("invoice-" + eventName + "-id-" + reservation.getId() + "-invoice-nr-" + reservation.getInvoiceNumber() + ".pdf"));
+                    zipOS.putNextEntry(new ZipEntry("invoice-" + eventName + "-id-" + reservation.getId() + "-invoice-nr-" + document.getNumber() + ".pdf"));
                     StreamUtils.copy(pdf.get(), zipOS);
                 }
             }
         }
     }
 
-    @RequestMapping(value = "/events-all-languages", method = GET)
+    @GetMapping("/events-all-languages")
     public List<ContentLanguage> getAllLanguages() {
         return i18nManager.getAvailableLanguages();
     }
 
-    @RequestMapping(value = "/events-supported-languages", method = GET)
+    @GetMapping("/events-supported-languages")
     public List<ContentLanguage> getSupportedLanguages() {
         return i18nManager.getSupportedLanguages();
     }
 
-    @RequestMapping(value = "/events/{eventName}/category/{categoryId}/ticket", method = GET)
+    @GetMapping("/events/{eventName}/category/{categoryId}/ticket")
     public PageAndContent<List<TicketWithStatistic>> getTicketsInCategory(@PathVariable("eventName") String eventName, @PathVariable("categoryId") int categoryId,
                                                                           @RequestParam(value = "page", required = false) Integer page,
                                                                           @RequestParam(value = "search", required = false) String search,
                                                                           Principal principal) {
-        Event event = loadEvent(eventName, principal);
+        EventAndOrganizationId event = eventManager.getEventAndOrganizationId(eventName, principal.getName());
         return new PageAndContent<>(eventStatisticsManager.loadModifiedTickets(event.getId(), categoryId, page == null ? 0 : page, search), eventStatisticsManager.countModifiedTicket(event.getId(), categoryId, search));
     }
 
-    @RequestMapping(value = "/events/{eventName}/ticket-sold-statistics", method = GET)
-    public List<TicketSoldStatistic> getTicketSoldStatistics(@PathVariable("eventName") String eventName, @RequestParam(value = "from", required = false) String f, @RequestParam(value = "to", required = false) String t, Principal principal) throws ParseException {
-        Event event = loadEvent(eventName, principal);
+    @GetMapping("/events/{eventName}/ticket-sold-statistics")
+    public TicketsStatistics getTicketsStatistics(@PathVariable("eventName") String eventName, @RequestParam(value = "from", required = false) String f, @RequestParam(value = "to", required = false) String t, Principal principal) throws ParseException {
+        EventAndOrganizationId event = eventManager.getEventAndOrganizationId(eventName, principal.getName());
         DateFormat format = new SimpleDateFormat("yyyy-MM-dd");
         //TODO: cleanup
         Date from = DateUtils.truncate(f == null ? new Date(0) : format.parse(f), Calendar.HOUR);
         Date to = DateUtils.addMilliseconds(DateUtils.ceiling(t == null ? new Date() : format.parse(t), Calendar.DATE), -1);
         //
 
-        return eventStatisticsManager.getTicketSoldStatistics(event.getId(), from, to);
+        int eventId = event.getId();
+        return new TicketsStatistics(eventStatisticsManager.getTicketSoldStatistics(eventId, from, to), eventStatisticsManager.getTicketReservedStatistics(eventId, from, to));
+    }
+
+    @DeleteMapping("/events/{eventName}/reservation/{reservationId}/transaction/{transactionId}/discard")
+    public ResponseEntity<String> discardMatchingPayment(@PathVariable("eventName") String eventName,
+                                                       @PathVariable("reservationId") String reservationId,
+                                                       @PathVariable("transactionId") int transactionId) {
+        var result = ticketReservationManager.discardMatchingPayment(eventName, reservationId, transactionId);
+        if(result.isSuccess()) {
+            return ResponseEntity.ok("OK");
+        } else {
+            return ResponseEntity.notFound().build();
+        }
     }
 
     private Event loadEvent(String eventName, Principal principal) {
-        Optional<Event> singleEvent = optionally(() -> eventManager.getSingleEvent(eventName, principal.getName()));
+        Optional<Event> singleEvent = eventManager.getOptionalByName(eventName, principal.getName());
         Validate.isTrue(singleEvent.isPresent(), "event not found");
         return singleEvent.get();
     }
+<<<<<<< HEAD
+=======
+
+    @Data
+    static class TicketsStatistics {
+        private final List<TicketsByDateStatistic> sold;
+        private final List<TicketsByDateStatistic> reserved;
+    }
+
+>>>>>>> 9c29352619b652bf15a42916a49e03042d48218d
 }

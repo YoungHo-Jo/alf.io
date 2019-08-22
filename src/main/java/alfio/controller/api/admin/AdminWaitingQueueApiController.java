@@ -21,13 +21,14 @@ import alfio.manager.EventManager;
 import alfio.manager.EventStatisticsManager;
 import alfio.manager.TicketReservationManager;
 import alfio.manager.WaitingQueueManager;
+import alfio.manager.system.ConfigurationLevel;
 import alfio.manager.system.ConfigurationManager;
 import alfio.model.Event;
 import alfio.model.WaitingQueueSubscription;
 import alfio.model.modification.ConfigurationModification;
-import alfio.model.system.Configuration;
 import alfio.model.system.ConfigurationKeys;
 import alfio.util.EventUtil;
+import alfio.util.ExportUtils;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import org.apache.commons.lang3.tuple.Pair;
@@ -36,13 +37,14 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
 import java.security.Principal;
 import java.time.ZonedDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static alfio.model.system.ConfigurationKeys.STOP_WAITING_QUEUE_SUBSCRIPTIONS;
-import static alfio.util.OptionalWrapper.optionally;
 import static java.util.Collections.singletonList;
 
 @RestController
@@ -56,9 +58,9 @@ public class AdminWaitingQueueApiController {
     private final ConfigurationManager configurationManager;
     private final EventStatisticsManager eventStatisticsManager;
 
-    @RequestMapping(value = "/status", method = RequestMethod.GET)
+    @GetMapping("/status")
     public Map<String, Boolean> getStatusForEvent(@PathVariable("eventName") String eventName, Principal principal) {
-        return optionally(() -> eventManager.getSingleEvent(eventName, principal.getName()))
+        return eventManager.getOptionalByName(eventName, principal.getName())
             .map(this::loadStatus)
             .orElse(Collections.emptyMap());
     }
@@ -68,19 +70,19 @@ public class AdminWaitingQueueApiController {
         List<SaleableTicketCategory> stcList = eventManager.loadTicketCategories(event)
             .stream()
             .filter(tc -> !tc.isAccessRestricted())
-            .map(tc -> new SaleableTicketCategory(tc, "", now, event, ticketReservationManager.countAvailableTickets(event, tc), tc.getMaxTickets(), null))
+            .map(tc -> new SaleableTicketCategory(tc, now, event, ticketReservationManager.countAvailableTickets(event, tc), tc.getMaxTickets(), null))
             .collect(Collectors.toList());
         boolean active = EventUtil.checkWaitingQueuePreconditions(event, stcList, configurationManager, eventStatisticsManager.noSeatsAvailable());
-        boolean paused = active && configurationManager.getBooleanConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), STOP_WAITING_QUEUE_SUBSCRIPTIONS), false);
+        boolean paused = active && configurationManager.getFor(STOP_WAITING_QUEUE_SUBSCRIPTIONS, ConfigurationLevel.event(event)).getValueAsBooleanOrDefault(false);
         Map<String, Boolean> result = new HashMap<>();
         result.put("active", active);
         result.put("paused", paused);
         return result;
     }
 
-    @RequestMapping(value = "/status", method = RequestMethod.PUT)
+    @PutMapping("/status")
     public Map<String, Boolean> setStatusForEvent(@PathVariable("eventName") String eventName, @RequestBody SetStatusForm form, Principal principal) {
-        return optionally(() -> eventManager.getSingleEvent(eventName, principal.getName()))
+        return eventManager.getOptionalByName(eventName, principal.getName())
             .map(event -> {
                 configurationManager.saveAllEventConfiguration(event.getId(), event.getOrganizationId(),
                     singletonList(new ConfigurationModification(null, ConfigurationKeys.STOP_WAITING_QUEUE_SUBSCRIPTIONS.name(), String.valueOf(form.status))),
@@ -89,9 +91,10 @@ public class AdminWaitingQueueApiController {
             }).orElse(Collections.emptyMap());
     }
 
-    @RequestMapping(value = "/count", method = RequestMethod.GET)
+    @GetMapping("/count")
     public Integer countWaitingPeople(@PathVariable("eventName") String eventName, Principal principal, HttpServletResponse response) {
-        Optional<Integer> count = optionally(() -> eventManager.getSingleEvent(eventName, principal.getName())).map(e -> waitingQueueManager.countSubscribers(e.getId()));
+        Optional<Integer> count = eventManager.getOptionalEventAndOrganizationIdByName(eventName, principal.getName())
+            .map(e -> waitingQueueManager.countSubscribers(e.getId()));
         if(count.isPresent()) {
             return count.get();
         }
@@ -99,9 +102,10 @@ public class AdminWaitingQueueApiController {
         return 0;
     }
 
-    @RequestMapping(value = "/load", method = RequestMethod.GET)
+    @GetMapping("/load")
     public List<WaitingQueueSubscription> loadAllSubscriptions(@PathVariable("eventName") String eventName, Principal principal, HttpServletResponse response) {
-        Optional<List<WaitingQueueSubscription>> count = optionally(() -> eventManager.getSingleEvent(eventName, principal.getName())).map(e -> waitingQueueManager.loadAllSubscriptionsForEvent(e.getId()));
+        Optional<List<WaitingQueueSubscription>> count = eventManager.getOptionalEventAndOrganizationIdByName(eventName, principal.getName())
+            .map(e -> waitingQueueManager.loadAllSubscriptionsForEvent(e.getId()));
         if(count.isPresent()) {
             return count.get();
         }
@@ -109,14 +113,39 @@ public class AdminWaitingQueueApiController {
         return Collections.emptyList();
     }
 
-    @RequestMapping(value = "/subscriber/{subscriberId}", method = RequestMethod.DELETE)
+    @GetMapping("/download")
+    public void downloadAllSubscriptions(@PathVariable("eventName") String eventName,
+                                         @RequestParam(name = "format", defaultValue = "excel") String format,
+                                         Principal principal, HttpServletResponse response) throws IOException {
+        var event = eventManager.getSingleEvent(eventName, principal.getName());
+        var found = waitingQueueManager.loadAllSubscriptionsForEvent(event.getId());
+
+        var header = new String[] {"Type", "Firstname", "Lastname", "Email", "Language", "Status", "Date"};
+        var lines = convertSubscriptions(found, event);
+        if ("excel".equals(format)) {
+            ExportUtils.exportExcel(event.getShortName() + "-waiting-queue.xlsx", "waiting-queue",
+                header,
+                lines, response);
+        } else {
+            ExportUtils.exportCsv(event.getShortName() + "-waiting-queue.csv", header, lines, response);
+        }
+    }
+
+    private static Stream<String[]> convertSubscriptions(List<WaitingQueueSubscription> l, Event event) {
+        return l.stream().map(s -> new String[] {s.getSubscriptionType().toString(),
+            s.getFirstName(), s.getLastName(), s.getEmailAddress(),
+            s.getLocale().toLanguageTag(), s.getStatus().name(),
+            s.getCreation().withZoneSameInstant(event.getZoneId()).toString()});
+    }
+
+    @DeleteMapping("/subscriber/{subscriberId}")
     public ResponseEntity<Map<String, Object>> removeSubscriber(@PathVariable("eventName") String eventName,
                                                                 @PathVariable("subscriberId") int subscriberId,
                                                                 Principal principal) {
         return performStatusModification(eventName, subscriberId, principal, WaitingQueueSubscription.Status.CANCELLED, WaitingQueueSubscription.Status.WAITING);
     }
 
-    @RequestMapping(value = "/subscriber/{subscriberId}/restore", method = RequestMethod.PUT)
+    @PutMapping("/subscriber/{subscriberId}/restore")
     public ResponseEntity<Map<String, Object>> restoreSubscriber(@PathVariable("eventName") String eventName,
                                                                      @PathVariable("subscriberId") int subscriberId,
                                                                      Principal principal) {
@@ -126,7 +155,7 @@ public class AdminWaitingQueueApiController {
     private ResponseEntity<Map<String, Object>> performStatusModification(String eventName, int subscriberId,
                                                                                Principal principal, WaitingQueueSubscription.Status newStatus,
                                                                                WaitingQueueSubscription.Status currentStatus) {
-        return optionally(() -> eventManager.getSingleEvent(eventName, principal.getName()))
+        return eventManager.getOptionalEventAndOrganizationIdByName(eventName, principal.getName())
             .flatMap(e -> waitingQueueManager.updateSubscriptionStatus(subscriberId, newStatus, currentStatus).map(s -> Pair.of(s, e)))
             .map(pair -> {
                 Map<String, Object> out = new HashMap<>();

@@ -16,52 +16,60 @@
  */
 package alfio.manager;
 
+import alfio.manager.system.ConfigurationLevel;
 import alfio.manager.system.ConfigurationManager;
+import alfio.model.EventAndOrganizationId;
 import alfio.model.VatDetail;
-import alfio.model.system.Configuration;
+import alfio.model.system.ConfigurationKeyValuePathLevel;
 import alfio.model.system.ConfigurationKeys;
-import okhttp3.*;
+import ch.digitalfondue.vatchecker.EUVatCheckResponse;
+import ch.digitalfondue.vatchecker.EUVatChecker;
 import org.junit.Before;
 import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mockito.Mock;
-import org.mockito.runners.MockitoJUnitRunner;
 
-import java.io.IOException;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.Assert.*;
-import static org.mockito.Matchers.*;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
-@RunWith(MockitoJUnitRunner.class)
 public class EuVatCheckerTest {
 
-    private static final String OK_RESPONSE = "{\"isValid\": true,\"name\": \"Test Corp.\",\"address\": \"Address\"}";
-    private static final String KO_RESPONSE = "{\"isValid\": false,\"name\": \"------\",\"address\": \"------\"}";
-
-    @Mock
-    private OkHttpClient client;
-    @Mock
-    private Call call;
-    @Mock
+    private EUVatChecker client;
     private ConfigurationManager configurationManager;
+    private EventAndOrganizationId eventAndOrganizationId;
 
     @Before
-    public void init() throws IOException {
-        when(configurationManager.getBooleanConfigValue(eq(Configuration.from(1, ConfigurationKeys.ENABLE_EU_VAT_DIRECTIVE)), anyBoolean())).thenReturn(true);
-        when(configurationManager.getStringConfigValue(eq(Configuration.from(1, ConfigurationKeys.COUNTRY_OF_BUSINESS)), anyString())).thenReturn("IT");
-        when(configurationManager.getStringConfigValue(eq(Configuration.getSystemConfiguration(ConfigurationKeys.EU_VAT_API_ADDRESS)), anyString())).thenReturn("http://localhost:8080");
-        when(client.newCall(any())).thenReturn(call);
+    public void init() {
+        client = mock(EUVatChecker.class);
+        configurationManager = mock(ConfigurationManager.class);
+        eventAndOrganizationId = mock(EventAndOrganizationId.class);
+        when(configurationManager.getFor(eq(ConfigurationKeys.ENABLE_EU_VAT_DIRECTIVE), any(ConfigurationLevel.class)))
+            .thenReturn(buildConfReturn(ConfigurationKeys.ENABLE_EU_VAT_DIRECTIVE, "true"));
+        when(configurationManager.getFor(eq(ConfigurationKeys.ENABLE_VIES_VALIDATION), any(ConfigurationLevel.class)))
+            .thenReturn(buildConfReturn(ConfigurationKeys.ENABLE_VIES_VALIDATION, "true"));
+        when(configurationManager.getForSystem(ConfigurationKeys.EU_COUNTRIES_LIST))
+            .thenReturn(buildConfReturn(ConfigurationKeys.EU_COUNTRIES_LIST, "IE"));
+        when(configurationManager.getFor(eq(ConfigurationKeys.COUNTRY_OF_BUSINESS), any(ConfigurationLevel.class)))
+            .thenReturn(buildConfReturn(ConfigurationKeys.COUNTRY_OF_BUSINESS, "IT"));
+        when(configurationManager.getFor(eq(Set.of(ConfigurationKeys.ENABLE_EU_VAT_DIRECTIVE, ConfigurationKeys.COUNTRY_OF_BUSINESS)), any()))
+            .thenReturn(Map.of(ConfigurationKeys.ENABLE_EU_VAT_DIRECTIVE, buildConfReturn(ConfigurationKeys.ENABLE_EU_VAT_DIRECTIVE, "true"),
+                ConfigurationKeys.COUNTRY_OF_BUSINESS, buildConfReturn(ConfigurationKeys.COUNTRY_OF_BUSINESS, "IT")));
+    }
+
+    private static ConfigurationManager.MaybeConfiguration buildConfReturn(ConfigurationKeys k, String value) {
+        return new ConfigurationManager.MaybeConfiguration(k, new ConfigurationKeyValuePathLevel("", value, null));
     }
 
     @Test
-    public void performCheckOK() throws IOException {
-        initResponse(200, OK_RESPONSE);
-        Optional<VatDetail> result = EuVatChecker.performCheck("1234", "IE", 1).apply(configurationManager, client);
+    public void performCheckOK() {
+        initResponse(true, "Test Corp.", "Address");
+        Optional<VatDetail> result = EuVatChecker.performCheck("1234", "IE", eventAndOrganizationId).apply(configurationManager, client);
         assertTrue(result.isPresent());
         VatDetail vatDetail = result.get();
         assertTrue(vatDetail.isValid());
+        assertEquals(VatDetail.Type.VIES, vatDetail.getType());
         assertEquals("1234", vatDetail.getVatNr());
         assertEquals("IE", vatDetail.getCountry());
         assertTrue(vatDetail.isVatExempt());
@@ -70,33 +78,85 @@ public class EuVatCheckerTest {
     }
 
     @Test
-    public void performCheckKO() throws IOException {
-        initResponse(200, KO_RESPONSE);
-        Optional<VatDetail> result = EuVatChecker.performCheck("1234", "IE", 1).apply(configurationManager, client);
+    public void performCheckKO() {
+        initResponse(false, "------", "------");
+        Optional<VatDetail> result = EuVatChecker.performCheck("12345", "IE", eventAndOrganizationId).apply(configurationManager, client);
         assertTrue(result.isPresent());
         VatDetail vatDetail = result.get();
         assertFalse(vatDetail.isValid());
-        assertEquals("1234", vatDetail.getVatNr());
+        assertEquals(VatDetail.Type.VIES, vatDetail.getType());
+        assertEquals("12345", vatDetail.getVatNr());
         assertEquals("IE", vatDetail.getCountry());
         assertFalse(vatDetail.isVatExempt());
         assertEquals("------", vatDetail.getName());
         assertEquals("------", vatDetail.getAddress());
     }
 
-    @Test
-    public void performCheckRequestFailed() throws IOException {
-        initResponse(404, "");
-        Optional<VatDetail> result = EuVatChecker.performCheck("1234", "IE", 1).apply(configurationManager, client);
+    @Test(expected = IllegalStateException.class)
+    public void performCheckRequestFailed() {
+        when(client.check(any(String.class), any(String.class))).thenThrow(new IllegalStateException("from test!"));
+        Optional<VatDetail> result = EuVatChecker.performCheck("1234", "IE", eventAndOrganizationId).apply(configurationManager, client);
         assertFalse(result.isPresent());
     }
 
-    private void initResponse(int status, String body) throws IOException {
-        Request request = new Request.Builder().url("http://localhost:8080").get().build();
-        Response response = new Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
-            .body(ResponseBody.create(MediaType.parse("application/json"), body))
-            .code(status)
-            .message("" + status)
-            .build();
-        when(call.execute()).thenReturn(response);
+    @Test
+    public void testForeignBusinessVATApplied() {
+        when(configurationManager.getFor(eq(ConfigurationKeys.APPLY_VAT_FOREIGN_BUSINESS), any(ConfigurationLevel.class))).thenReturn(buildConfReturn(ConfigurationKeys.APPLY_VAT_FOREIGN_BUSINESS, "true"));
+        Optional<VatDetail> result = EuVatChecker.performCheck("1234", "UK", eventAndOrganizationId).apply(configurationManager, client);
+        assertTrue(result.isPresent());
+        VatDetail vatDetail = result.get();
+        assertTrue(vatDetail.isValid());
+        assertEquals(VatDetail.Type.EXTRA_EU, vatDetail.getType());
+        assertFalse(vatDetail.isVatExempt());
+        assertEquals("1234", vatDetail.getVatNr());
+        assertEquals("UK", vatDetail.getCountry());
+    }
+
+    @Test
+    public void testForeignBusinessVATNotApplied() {
+        when(configurationManager.getFor(eq(ConfigurationKeys.APPLY_VAT_FOREIGN_BUSINESS), any(ConfigurationLevel.class))).thenReturn(buildConfReturn(ConfigurationKeys.APPLY_VAT_FOREIGN_BUSINESS, "false"));
+        Optional<VatDetail> result = EuVatChecker.performCheck("1234", "UK", eventAndOrganizationId).apply(configurationManager, client);
+        assertTrue(result.isPresent());
+        VatDetail vatDetail = result.get();
+        assertTrue(vatDetail.isValid());
+        assertEquals(VatDetail.Type.EXTRA_EU, vatDetail.getType());
+        assertTrue(vatDetail.isVatExempt());
+        assertEquals("1234", vatDetail.getVatNr());
+        assertEquals("UK", vatDetail.getCountry());
+    }
+
+    @Test
+    public void testForeignBusinessVATNotAppliedValidationDisabled() {
+        when(configurationManager.getFor(eq(ConfigurationKeys.ENABLE_VIES_VALIDATION), any(ConfigurationLevel.class))).thenReturn(buildConfReturn(ConfigurationKeys.ENABLE_VIES_VALIDATION, "true"));
+        when(configurationManager.getFor(eq(ConfigurationKeys.APPLY_VAT_FOREIGN_BUSINESS), any(ConfigurationLevel.class))).thenReturn(buildConfReturn(ConfigurationKeys.APPLY_VAT_FOREIGN_BUSINESS, "false"));
+        Optional<VatDetail> result = EuVatChecker.performCheck("1234", "UK", eventAndOrganizationId).apply(configurationManager, client);
+        assertTrue(result.isPresent());
+        VatDetail vatDetail = result.get();
+        assertEquals(VatDetail.Type.EXTRA_EU, vatDetail.getType());
+        assertTrue(vatDetail.isValid());
+        assertTrue(vatDetail.isVatExempt());
+        assertEquals("1234", vatDetail.getVatNr());
+        assertEquals("UK", vatDetail.getCountry());
+    }
+
+    @Test
+    public void testEUBusinessVATNotAppliedValidationDisabled() {
+        when(configurationManager.getFor(eq(ConfigurationKeys.ENABLE_VIES_VALIDATION), any(ConfigurationLevel.class))).thenReturn(buildConfReturn(ConfigurationKeys.ENABLE_VIES_VALIDATION, "false"));
+        Optional<VatDetail> result = EuVatChecker.performCheck("1234", "IE", eventAndOrganizationId).apply(configurationManager, client);
+        assertTrue(result.isPresent());
+        VatDetail vatDetail = result.get();
+        assertTrue(vatDetail.isValid());
+        assertTrue(vatDetail.isVatExempt());
+        assertEquals(VatDetail.Type.SKIPPED, vatDetail.getType());
+        assertEquals("1234", vatDetail.getVatNr());
+        assertEquals("IE", vatDetail.getCountry());
+    }
+
+    private void initResponse(boolean isValid, String name, String address) {
+        EUVatCheckResponse resp = mock(EUVatCheckResponse.class);
+        when(resp.isValid()).thenReturn(isValid);
+        when(resp.getName()).thenReturn(name);
+        when(resp.getAddress()).thenReturn(address);
+        when(client.check(any(String.class), any(String.class))).thenReturn(resp);
     }
 }

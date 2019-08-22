@@ -16,23 +16,26 @@
  */
 package alfio.controller.api.admin;
 
+import alfio.manager.system.ConfigurationLevel;
 import alfio.manager.system.ConfigurationManager;
 import alfio.model.modification.support.LocationDescriptor;
-import alfio.model.system.Configuration;
 import alfio.model.system.ConfigurationKeys;
 import com.moodysalem.TimezoneMapper;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
+import lombok.extern.log4j.Log4j2;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.ZoneId;
 import java.util.*;
-import java.util.function.Function;
+
+import static alfio.model.system.ConfigurationKeys.*;
 
 @RestController
 @RequestMapping("/admin/api")
+@Log4j2
 public class LocationApiController {
 
     private final ConfigurationManager configurationManager;
@@ -45,17 +48,18 @@ public class LocationApiController {
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public String unhandledException(Exception e) {
+       log.error("Exception in location api", e);
         return e.getMessage();
     }
 
-    @RequestMapping("/location/timezones")
+    @GetMapping("/location/timezones")
     public List<String> getTimezones() {
         List<String> s = new ArrayList<>(ZoneId.getAvailableZoneIds());
         s.sort(String::compareTo);
         return s;
     }
 
-    @RequestMapping("/location/timezone")
+    @GetMapping("/location/timezone")
     public String getTimezone(@RequestParam("lat") double lat, @RequestParam("lng") double lng) {
         String tzId = TimezoneMapper.tzNameAt(lat, lng);
         return getTimezones().contains(tzId) ? tzId : null;
@@ -63,31 +67,28 @@ public class LocationApiController {
 
 
 
-    @RequestMapping("/location/static-map-image")
+    @GetMapping("/location/static-map-image")
     public String getMapImage(
-        @RequestParam("lat") String lat,
-        @RequestParam("lng") String lng) {
+        @RequestParam(name = "lat", required = false) String lat,
+        @RequestParam(name = "lng", required = false) String lng) {
         Map<ConfigurationKeys, Optional<String>> geoInfoConfiguration = getGeoConf();
         return LocationDescriptor.getMapUrl(lat, lng, geoInfoConfiguration);
     }
 
     private Map<ConfigurationKeys, Optional<String>> getGeoConf() {
-        Function<ConfigurationKeys, Configuration.ConfigurationPathKey> pathKeyBuilder = (key) -> Configuration.getSystemConfiguration(key);
-        return configurationManager.getStringConfigValueFrom(
-                pathKeyBuilder.apply(ConfigurationKeys.MAPS_PROVIDER),
-                pathKeyBuilder.apply(ConfigurationKeys.MAPS_CLIENT_API_KEY),
-                pathKeyBuilder.apply(ConfigurationKeys.MAPS_HERE_APP_ID),
-                pathKeyBuilder.apply(ConfigurationKeys.MAPS_HERE_APP_CODE));
+        var keys = Set.of(MAPS_PROVIDER, MAPS_CLIENT_API_KEY, MAPS_HERE_APP_ID, MAPS_HERE_APP_CODE);
+        var conf = configurationManager.getFor(keys, ConfigurationLevel.system());
+        var res = new EnumMap<ConfigurationKeys, Optional<String>>(ConfigurationKeys.class);
+        conf.forEach((k,v) -> res.put(k, v.getValue()));
+        return res;
     }
 
-    @RequestMapping("/location/map-provider-client-api-key")
+    @GetMapping("/location/map-provider-client-api-key")
     public ProviderAndKeys getGeoInfoProviderAndKeys() {
         Map<ConfigurationKeys, Optional<String>> geoInfoConfiguration = getGeoConf();
         ConfigurationKeys.GeoInfoProvider provider = LocationDescriptor.getProvider(geoInfoConfiguration);
-        Map<ConfigurationKeys, String> apiKeys = new HashMap<>();
-        geoInfoConfiguration.forEach((k,v) -> {
-            v.ifPresent(value -> apiKeys.put(k, value));
-        });
+        Map<ConfigurationKeys, String> apiKeys = new EnumMap<>(ConfigurationKeys.class);
+        geoInfoConfiguration.forEach((k,v) -> v.ifPresent(value -> apiKeys.put(k, value)));
         return new ProviderAndKeys(provider, apiKeys);
     }
 

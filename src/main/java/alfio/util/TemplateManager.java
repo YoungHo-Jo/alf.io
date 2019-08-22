@@ -16,29 +16,21 @@
  */
 package alfio.util;
 
-import alfio.config.WebSecurityConfig;
 import alfio.manager.UploadedResourceManager;
-import alfio.model.Event;
+import alfio.manager.i18n.MessageSourceManager;
+import alfio.model.EventAndOrganizationId;
 import com.samskivert.mustache.Mustache;
 import com.samskivert.mustache.Mustache.Compiler;
 import com.samskivert.mustache.Mustache.Formatter;
 import com.samskivert.mustache.Template;
 import org.apache.commons.lang3.tuple.Pair;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.MessageSource;
-import org.springframework.core.io.AbstractResource;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.ClassPathResource;
-import org.springframework.security.web.csrf.CsrfToken;
-import org.springframework.web.context.support.ServletContextResource;
+import org.springframework.core.io.Resource;
 import org.springframework.web.servlet.ModelAndView;
-import org.springframework.web.servlet.i18n.MustacheLocalizationMessageInterceptor;
-import org.springframework.web.servlet.support.RequestContextUtils;
-import org.springframework.web.servlet.view.mustache.jmustache.JMustacheTemplateLoader;
 
-import javax.servlet.http.HttpServletRequest;
-import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -46,13 +38,18 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static alfio.util.MustacheCustomTag.ADDITIONAL_FIELD_VALUE;
+import static alfio.util.MustacheCustomTag.COUNTRY_NAME;
+
 /**
- * For hiding the uglyness :)
+ * For hiding the ugliness :)
  * */
 public class TemplateManager {
 
 
-    private final MessageSource messageSource;
+    private final MessageSourceManager messageSourceManager;
+
+    public static final String VAT_TRANSLATION_TEMPLATE_KEY = "vatTranslation";
 
     public enum TemplateOutput {
         TEXT, HTML
@@ -62,66 +59,71 @@ public class TemplateManager {
 
     private final UploadedResourceManager uploadedResourceManager;
 
-    @Autowired
-    public TemplateManager(JMustacheTemplateLoader templateLoader,
-                           MessageSource messageSource,
+    private static final Formatter DATE_FORMATTER = o -> (o instanceof ZonedDateTime) ? DateTimeFormatter.ISO_ZONED_DATE_TIME.format((ZonedDateTime) o) : String.valueOf(o);
+
+    public TemplateManager(MessageSourceManager messageSourceManager,
                            UploadedResourceManager uploadedResourceManager) {
-        this.messageSource = messageSource;
+        this.messageSourceManager = messageSourceManager;
         this.uploadedResourceManager = uploadedResourceManager;
-        Formatter dateFormatter = (o) -> {
-            return (o instanceof ZonedDateTime) ? DateTimeFormatter.ISO_ZONED_DATE_TIME
-                .format((ZonedDateTime) o) : String.valueOf(o);
-        };
+
         this.compilers = new EnumMap<>(TemplateOutput.class);
         this.compilers.put(TemplateOutput.TEXT, Mustache.compiler()
             .escapeHTML(false)
             .standardsMode(false)
             .defaultValue("")
             .nullValue("")
-            .withFormatter(dateFormatter)
-            .withLoader(templateLoader));
+            .withFormatter(DATE_FORMATTER));
         this.compilers.put(TemplateOutput.HTML, Mustache.compiler()
             .escapeHTML(true)
             .standardsMode(false)
             .defaultValue("")
             .nullValue("")
-            .withFormatter(dateFormatter)
-            .withLoader(templateLoader));
+            .withFormatter(DATE_FORMATTER));
     }
 
-    public String renderTemplate(TemplateResource templateResource, Map<String, Object> model, Locale locale) {
-        return render(new ClassPathResource(templateResource.classPath()), model, locale, templateResource.getTemplateOutput());
+    private String renderTemplate(Optional<? extends EventAndOrganizationId> event, TemplateResource templateResource, Map<String, Object> model, Locale locale) {
+        return render(new ClassPathResource(templateResource.classPath()), modelEnricher(model, event, locale), locale, event.orElse(null), templateResource.getTemplateOutput());
     }
 
-    public String renderTemplate(Event event, TemplateResource templateResource, Map<String, Object> model, Locale locale) {
+    public String renderTemplate(EventAndOrganizationId event, TemplateResource templateResource, Map<String, Object> model, Locale locale) {
+        Map<String, Object> updatedModel = modelEnricher(model, Optional.of(event), locale);
         return uploadedResourceManager.findCascading(event.getOrganizationId(), event.getId(), templateResource.getSavedName(locale))
-            .map(resource -> render(new ByteArrayResource(resource), model, locale, templateResource.getTemplateOutput()))
-            .orElseGet(() -> renderTemplate(templateResource, model, locale));
+            .map(resource -> render(new ByteArrayResource(resource), updatedModel, locale, event, templateResource.getTemplateOutput()))
+            .orElseGet(() -> renderTemplate(Optional.of(event), templateResource, updatedModel, locale));
     }
 
-    public String renderString(String template, Map<String, Object> model, Locale locale, TemplateOutput templateOutput) {
-        return render(new ByteArrayResource(template.getBytes(StandardCharsets.UTF_8)), model, locale, templateOutput);
+    public String renderString(EventAndOrganizationId event, String template, Map<String, Object> model, Locale locale, TemplateOutput templateOutput) {
+        return render(new ByteArrayResource(template.getBytes(StandardCharsets.UTF_8)), modelEnricher(model, Optional.ofNullable(event), locale), locale, event, templateOutput);
     }
 
-    //TODO: to be removed when only the rest api will be exposed
-    public String renderServletContextResource(String servletContextResource, Map<String, Object> model, HttpServletRequest request, TemplateOutput templateOutput) {
-        model.put("request", request);
-        model.put(WebSecurityConfig.CSRF_PARAM_NAME, request.getAttribute(CsrfToken.class.getName()));
-        return render(new ServletContextResource(request.getServletContext(), servletContextResource), model, RequestContextUtils.getLocale(request), templateOutput);
+    public void renderHtml(Resource resource, Map<String, Object> model, OutputStream os) {
+        try (var osw = new OutputStreamWriter(os, StandardCharsets.UTF_8)) {
+            compile(resource, TemplateOutput.HTML).execute(model, osw);
+        } catch (IOException ioe) {
+            throw new IllegalStateException(ioe);
+        }
     }
 
-    private String render(AbstractResource resource, Map<String, Object> model, Locale locale, TemplateOutput templateOutput) {
+    private Map<String, Object> modelEnricher(Map<String, Object> model, Optional<? extends EventAndOrganizationId> event, Locale locale) {
+        Map<String, Object> toEnrich = new HashMap<>(model);
+        event.ifPresent(ev -> toEnrich.put(VAT_TRANSLATION_TEMPLATE_KEY, messageSourceManager.getMessageSourceForEvent(ev).getMessage("common.vat", null, locale)));
+        return toEnrich;
+    }
+
+    private String render(Resource resource, Map<String, Object> model, Locale locale, EventAndOrganizationId eventAndOrganizationId, TemplateOutput templateOutput) {
         try {
             ModelAndView mv = new ModelAndView((String) null, model);
-            mv.addObject("format-date", MustacheCustomTagInterceptor.FORMAT_DATE);
-            mv.addObject(MustacheLocalizationMessageInterceptor.DEFAULT_MODEL_KEY, new CustomLocalizationMessageInterceptor(locale, messageSource).createTranslator());
+            mv.addObject("format-date", MustacheCustomTag.FORMAT_DATE);
+            mv.addObject("country-name", COUNTRY_NAME);
+            mv.addObject("additional-field-value", ADDITIONAL_FIELD_VALUE.apply(model.get("additional-fields")));
+            mv.addObject("i18n", new CustomLocalizationMessageInterceptor(locale, messageSourceManager.getMessageSourceForEvent(eventAndOrganizationId)).createTranslator());
             return compile(resource, templateOutput).execute(mv.getModel());
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
     }
 
-    private Template compile(AbstractResource resource, TemplateOutput templateOutput) {
+    private Template compile(Resource resource, TemplateOutput templateOutput) {
         try (InputStreamReader tmpl = new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8)) {
             return compilers.get(templateOutput).compile(tmpl);
         } catch (IOException ioe) {
@@ -130,7 +132,7 @@ public class TemplateManager {
     }
 
     private static final Pattern KEY_PATTERN = Pattern.compile("(.*?)[\\s\\[]");
-    private static final Pattern ARGS_PATTERN = Pattern.compile("\\[(.*?)\\]");
+    private static final Pattern ARGS_PATTERN = Pattern.compile("\\[(.*?)]");
 
     /**
      * Split key from (optional) arguments.
@@ -330,14 +332,11 @@ public class TemplateManager {
 
         ParserState state = ParserState.START;
         int idx = 0;
-        while (true) {
+        do {
             Pair<ParserState, Integer> stateAndIdx = state.next(template, idx, ast);
             state = stateAndIdx.getKey();
             idx = stateAndIdx.getValue();
-            if (state == ParserState.END) {
-                break;
-            }
-        }
+        } while (state != ParserState.END);
 
         ast.visit(sb, locale, messageSource);
 

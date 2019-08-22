@@ -1,6 +1,6 @@
 (function() {
     "use strict";
-    angular.module('alfio-configuration', ['adminServices'])
+    angular.module('alfio-configuration', ['adminServices', 'group'])
         .config(['$stateProvider', function($stateProvider) {
             $stateProvider
                 .state('configuration', {
@@ -46,8 +46,35 @@
         .service('ConfigurationService', ConfigurationService)
         .directive('basicConfigurationNeeded', basicConfigurationNeeded);
 
-    function ConfigurationService($http, HttpErrorHandler) {
+    function ConfigurationService($http, HttpErrorHandler, $q, $timeout, $window) {
+        var configurationCache = null;
         return {
+            loadSettingCategories: function() {
+                return $http.get('/admin/api/configuration/setting-categories').error(HttpErrorHandler.handle);
+            },
+            loadCurrentConfigurationContext: function(OrganizationService, EventService) {
+                if(configurationCache == null) {
+                    configurationCache = $q(function(resolve, reject) {
+                        $q.all([OrganizationService.getAllOrganizations(), EventService.getAllEvents()]).then(function(results) {
+                            var organizations = results[0].data;
+                            var events = results[1].data;
+                            resolve({
+                                organizations: _.map(organizations, function(org) {
+                                    org.events = _.filter(events, function(e) {return !e.expired && e.organizationId === org.id});
+                                    return org;
+                                })
+                            });
+                        }, function(e) {
+                            reject(e);
+                        });
+                    })
+                }
+                $timeout(function() {
+                    configurationCache = null;
+                }, 10000);
+                return configurationCache;
+
+            },
             loadAll: function() {
                 return $http.get('/admin/api/configuration/load').error(HttpErrorHandler.handle);
             },
@@ -56,6 +83,12 @@
             },
             loadEventConfig: function(eventId) {
                 return $http.get('/admin/api/configuration/events/'+eventId+'/load').error(HttpErrorHandler.handle)
+            },
+            loadSingleConfigForEvent: function(eventId, key) {
+                return $http.get('/admin/api/configuration/events/'+eventId+'/single/'+key).error(HttpErrorHandler.handle)
+            },
+            getBaseUrl: function() {
+                return $window.location.origin;
             },
             loadCategory: function(eventId, categoryId) {
                 return $http.get('/admin/api/configuration/events/'+eventId+'/categories/'+categoryId+'/load').error(HttpErrorHandler.handle);
@@ -90,16 +123,10 @@
             removeCategoryConfig: function(conf, eventId, categoryId) {
                 return $http['delete']('/admin/api/configuration/event/'+eventId+'/category/'+categoryId+'/key/' + conf.configurationKey).error(HttpErrorHandler.handle);
             },
-            loadPluginsConfig: function(eventId) {
-                return $http.get('/admin/api/configuration/events/'+eventId+'/plugin/load').error(HttpErrorHandler.handle);
-            },
             getPlatformModeStatus: function(orgId) {
                 return $http.get('/admin/api/configuration/platform-mode/status/'+orgId).error(HttpErrorHandler.handle);
             },
-            bulkUpdatePlugins: function(eventId, pluginConfigOptions) {
-                return $http.post('/admin/api/configuration/events/'+eventId+'/plugin/update-bulk', pluginConfigOptions).error(HttpErrorHandler.handle);
-            },
-            transformConfigurationObject: function(original) {
+            transformConfigurationObject: function(original, availableCategories) {
                 var transformed = {};
                 transformed.settings = original;
                 transformed.general = {
@@ -115,7 +142,7 @@
                         mailReplyTo: _.find(original['MAIL'], function(e) {return e.configurationKey === 'MAIL_REPLY_TO';}),
                         mailAttemptsCount: _.find(original['MAIL'], function(e) {return e.configurationKey === 'MAIL_ATTEMPTS_COUNT';})
                     };
-                };
+                }
 
                 if(angular.isDefined(original['MAP']) && original['MAP'].length > 0) {
                     transformed.map = {
@@ -126,10 +153,13 @@
                     }
                 }
 
-                _.forEach(['PAYMENT', 'PAYMENT_STRIPE', 'PAYMENT_PAYPAL', /*'PAYMENT_MOLLIE',*/ 'PAYMENT_OFFLINE', 'INVOICE_EU', 'ALFIO_PI'], function(group) {
+                var filterList = ['GENERAL', 'MAIL', 'MAP', 'PAYMENT_MOLLIE' /* temporary, until we implement Mollie */];
+                _.forEach(availableCategories.filter(function(x) { return filterList.indexOf(x) === -1; }), function(group) {
                     if(angular.isDefined(original[group]) && original[group].length > 0) {
                         transformed[_.camelCase(group)] = {
-                            settings: original[group]
+                            settings: _.sortBy(original[group], function(s) {
+                                return s.componentType === 'BOOLEAN' ? 0 : 10;
+                            })
                         };
                     }
                 });
@@ -138,19 +168,13 @@
         };
     }
 
-    ConfigurationService.$inject = ['$http', 'HttpErrorHandler'];
+    ConfigurationService.$inject = ['$http', 'HttpErrorHandler', '$q', '$timeout', '$window'];
 
-    function ConfigurationController(OrganizationService, EventService, $q, $rootScope) {
+    function ConfigurationController(OrganizationService, EventService, $q, ConfigurationService) {
         var configCtrl = this;
         configCtrl.loading = true;
-        $q.all([OrganizationService.getAllOrganizations(), EventService.getAllEvents()]).then(function(results) {
-            var organizations = results[0].data;
-            var events = results[1].data;
-            configCtrl.organizations = _.map(organizations, function(org) {
-                org.events = _.filter(events, function(e) {return !e.expired && e.organizationId === org.id});
-                return org;
-            });
-            $rootScope.$emit('ConfigurationMenuLoaded', configCtrl.organizations);
+        ConfigurationService.loadCurrentConfigurationContext(OrganizationService, EventService).then(function(res) {
+            configCtrl.organizations = res.organizations;
             configCtrl.loading = false;
         }, function(e) {
             alert(e);
@@ -161,17 +185,17 @@
 
     function handleEuCountries(conf, euCountries) {
         if(conf.invoiceEu) {
-            var euCountries = _.map(euCountries, function(o) {
+            var eu = _.map(euCountries, function(o) {
                 var key = Object.keys(o)[0];
                 return {key: key, value: o[key]};
             });
             _.forEach(_.filter(conf.invoiceEu.settings, function(e) {return e.key === 'COUNTRY_OF_BUSINESS'}), function(cb) {
-                cb.listValues = euCountries;
+                cb.listValues = eu;
             });
         }
     }
 
-    ConfigurationController.$inject = ['OrganizationService', 'EventService', '$q', '$rootScope'];
+    ConfigurationController.$inject = ['OrganizationService', 'EventService', '$q', 'ConfigurationService'];
 
     function SystemConfigurationController(ConfigurationService, EventService, ExtensionService, NotificationHandler, $rootScope, $q) {
         var systemConf = this;
@@ -181,9 +205,16 @@
 
         var loadAll = function() {
             systemConf.loading = true;
-            $q.all([EventService.getAllLanguages(), ConfigurationService.loadAll(), ConfigurationService.loadEUCountries(), ExtensionService.loadSystem()]).then(function(results) {
+            $q.all([
+                EventService.getAllLanguages(),
+                ConfigurationService.loadAll(),
+                ConfigurationService.loadEUCountries(),
+                ExtensionService.loadSystem(),
+                ConfigurationService.loadSettingCategories()]).then(function(results) {
                 systemConf.allLanguages = results[0].data;
-                loadSettings(systemConf, results[1].data, ConfigurationService);
+                var settingCategories = results[4].data;
+                systemConf.settingCategories = settingCategories;
+                loadSettings(systemConf, results[1].data, ConfigurationService, settingCategories);
                 if(systemConf.general) {
                     systemConf.general.selectedLanguages = _.chain(systemConf.allLanguages).map('value').filter(function(x) {return parseInt(systemConf.general.supportedTranslations.value) & x;}).value();
                     systemConf.isLanguageSelected = function(lang) {
@@ -204,6 +235,9 @@
                 }
 
                 systemConf.extensionSettings = results[3].data;
+                systemConf.cancel = function() {
+                    loadAll();
+                };
 
             }, function() {
                 systemConf.loading = false;
@@ -254,15 +288,19 @@
                 ConfigurationService.loadOrganizationConfig(organizationConf.organizationId),
                 ConfigurationService.loadEUCountries(),
                 ConfigurationService.getPlatformModeStatus(organizationConf.organizationId),
-                ExtensionService.loadOrganizationConfigWithOrgId(organizationConf.organizationId)
+                ExtensionService.loadOrganizationConfigWithOrgId(organizationConf.organizationId),
+                ConfigurationService.loadSettingCategories()
             ]).then(function(result) {
                     organizationConf.organization = result[0].data;
-                    loadSettings(organizationConf, result[1].data, ConfigurationService);
+                    loadSettings(organizationConf, result[1].data, ConfigurationService, result[5].data);
                     handleEuCountries(organizationConf, result[2].data);
                     var platformModeStatus = result[3].data;
                     organizationConf.platformModeEnabled = platformModeStatus.enabled;
                     organizationConf.stripeConnected = platformModeStatus.stripeConnected;
                     organizationConf.extensionSettings = result[4].data;
+                    organizationConf.cancel = function() {
+                        load();
+                    };
                 }, function() {
                     organizationConf.loading = false;
                 });
@@ -299,7 +337,38 @@
 
     OrganizationConfigurationController.$inject = ['ConfigurationService', 'OrganizationService', 'ExtensionService', 'NotificationHandler', '$stateParams', '$q', '$rootScope'];
 
-    function EventConfigurationController(ConfigurationService, EventService, ExtensionService, NotificationHandler, $q, $rootScope, $stateParams) {
+    var groupTypes = {
+        'ONCE_PER_VALUE': 'Limit to one ticket per email address',
+        'LIMITED_QUANTITY': 'Limit to a specific number of tickets per email address',
+        'UNLIMITED': 'Unlimited'
+    };
+
+    var groupMatchTypes = {
+        'FULL': 'Full match',
+        'EMAIL_DOMAIN': 'Match full email address, fallback on domain'
+    };
+
+    function selectGroup(conf) {
+        return function(list) {
+            conf.group = {
+                groupId: list.id,
+                eventId: conf.event.id,
+                ticketCategoryId: conf.category ? conf.category.id : null,
+                matchType: 'FULL',
+                type: 'ONCE_PER_VALUE'
+            };
+        }
+    }
+
+    function EventConfigurationController(ConfigurationService,
+                                          EventService,
+                                          ExtensionService,
+                                          NotificationHandler,
+                                          $q,
+                                          $rootScope,
+                                          $stateParams,
+                                          GroupService,
+                                          $state) {
         var eventConf = this;
         var getData = function() {
             if(angular.isDefined($stateParams.eventName)) {
@@ -309,7 +378,11 @@
                     var event = result.data.event;
                     eventConf.eventName = event.shortName;
                     eventConf.eventId = event.id;
-                    $q.all([ConfigurationService.loadEventConfig(eventConf.eventId), ConfigurationService.loadPluginsConfig(eventConf.eventId), ExtensionService.loadEventConfigWithOrgIdAndEventId(eventConf.organizationId, eventConf.eventId)]).then(function(result) {
+                    $q.all([
+                        ConfigurationService.loadEventConfig(eventConf.eventId),
+                        ExtensionService.loadEventConfigWithOrgIdAndEventId(eventConf.organizationId, eventConf.eventId),
+                        ConfigurationService.loadSettingCategories()
+                    ]).then(function(result) {
                         deferred.resolve([{data:event}].concat(result));
                     }, function(e) {
                         deferred.reject(e);
@@ -321,7 +394,12 @@
             } else {
                 eventConf.eventId = $stateParams.eventId;
                 eventConf.organizationId = $stateParams.organizationId;
-                return $q.all([EventService.getEventById($stateParams.eventId), ConfigurationService.loadEventConfig($stateParams.eventId), ConfigurationService.loadPluginsConfig($stateParams.eventId), ExtensionService.loadEventConfigWithOrgIdAndEventId(eventConf.organizationId, eventConf.eventId)])
+                return $q.all([
+                    EventService.getEventById($stateParams.eventId),
+                    ConfigurationService.loadEventConfig($stateParams.eventId),
+                    ExtensionService.loadEventConfigWithOrgIdAndEventId(eventConf.organizationId, eventConf.eventId),
+                    ConfigurationService.loadSettingCategories()
+                ])
             }
         };
 
@@ -329,14 +407,22 @@
             eventConf.loading = true;
             getData().then(function(result) {
                     eventConf.event = result[0].data;
-                    loadSettings(eventConf, result[1].data, ConfigurationService);
-                    eventConf.pluginSettings = result[2].data;
-                    eventConf.pluginSettingsByPluginId = _.groupBy(result[2].data, 'pluginId');
+                    loadGroups();
+                    loadSettings(eventConf, result[1].data, ConfigurationService, result[3].data);
+
+
                     if(eventConf.alfioPi) {
                         eventConf.alfioPiOptions = _.filter(eventConf.alfioPi.settings, function(pi) { return pi.key !== 'LABEL_LAYOUT'});
                         eventConf.labelLayout = _.find(eventConf.alfioPi.settings, function(pi) { return pi.key === 'LABEL_LAYOUT'});
                     }
-                    eventConf.extensionSettings = result[3].data;
+                    eventConf.extensionSettings = result[2].data;
+                    eventConf.cancel = function() {
+                        if(eventConf.eventName) {
+                            $state.go('events.single.detail', {eventName: eventConf.eventName});
+                        } else {
+                            load();
+                        }
+                    };
                     eventConf.loading = false;
                 }, function() {
                     eventConf.loading = false;
@@ -354,8 +440,9 @@
             }
             eventConf.loading = true;
             $q.all([ConfigurationService.updateEventConfig(eventConf.organizationId, eventConf.eventId, eventConf.settings),
-                ConfigurationService.bulkUpdatePlugins(eventConf.eventId, eventConf.pluginSettings),
-                ExtensionService.saveBulkEventSetting(eventConf.organizationId, eventConf.eventId, eventConf.extensionSettings)]).then(function() {
+                ExtensionService.saveBulkEventSetting(eventConf.organizationId, eventConf.eventId, eventConf.extensionSettings),
+                GroupService.linkTo(eventConf.group)
+            ]).then(function() {
                 load();
                 NotificationHandler.showSuccess("Configurations have been saved successfully");
             }, function(e) {
@@ -376,18 +463,45 @@
         $rootScope.$on('ReloadSettings', function() {
             load();
         });
+
+        function loadGroups() {
+            $q.all([
+                GroupService.loadGroups(eventConf.event.organizationId),
+                GroupService.loadActiveGroup(eventConf.event.shortName)
+            ]).then(function(results) {
+                eventConf.groups = results[0].data;
+                eventConf.group = results[1].status === 200 ? results[1].data : null;
+                eventConf.selectGroup = selectGroup(eventConf);
+                eventConf.groupTypes = groupTypes;
+                eventConf.groupMatchTypes = groupMatchTypes;
+                eventConf.removeGroupLink = unlinkGroup(eventConf, GroupService, load);
+            });
+
+        }
     }
 
-    EventConfigurationController.$inject = ['ConfigurationService', 'EventService', 'ExtensionService', 'NotificationHandler', '$q', '$rootScope', '$stateParams'];
+    EventConfigurationController.$inject = ['ConfigurationService', 'EventService', 'ExtensionService', 'NotificationHandler', '$q', '$rootScope', '$stateParams', 'GroupService', '$state'];
 
-    function loadSettings(container, settings, ConfigurationService) {
+    function unlinkGroup(conf, GroupService, loadFn) {
+        return function(organizationId, groupLink) {
+            if(groupLink && angular.isDefined(groupLink.id)) {
+                GroupService.unlinkFrom(organizationId, groupLink.id).then(function() {
+                    loadFn();
+                });
+            } else {
+                conf.group = undefined;
+            }
+        };
+    }
+
+    function loadSettings(container, settings, ConfigurationService, settingCategories) {
         var general = settings['GENERAL'] || [];
+        if(general.length > 0) {
+            container.settings = settings;
+            angular.extend(container, ConfigurationService.transformConfigurationObject(settings, settingCategories));
+        }
         container.hasResults = general.length > 0;
         container.noResults = general.length === 0;
-        if(container.hasResults) {
-            container.settings = settings;
-            angular.extend(container, ConfigurationService.transformConfigurationObject(settings));
-        }
         container.loading = false;
     }
 
@@ -400,33 +514,52 @@
                 closeModal: '&'
             },
             bindToController: true,
-            controller: 'CategoryConfigurationController',
+            controller: ['ConfigurationService', '$rootScope', 'GroupService', '$q', CategoryConfigurationController],
             controllerAs: 'categoryConf',
             templateUrl: '/resources/angular-templates/admin/partials/configuration/category.html'
         };
     }
 
-    function CategoryConfigurationController(ConfigurationService, $rootScope) {
+    function CategoryConfigurationController(ConfigurationService, $rootScope, GroupService, $q) {
         var categoryConf = this;
 
         var load = function() {
             categoryConf.loading = true;
-            ConfigurationService.loadCategory(categoryConf.event.id, categoryConf.category.id).then(function(result) {
-                loadSettings(categoryConf, result.data, ConfigurationService);
-                categoryConf.loading = false;
-            }, function() {
-                categoryConf.loading = false;
-            });
+            $q.all([ConfigurationService.loadCategory(categoryConf.event.id, categoryConf.category.id),
+                GroupService.loadGroups(categoryConf.event.organizationId),
+                GroupService.loadActiveGroup(categoryConf.event.shortName, categoryConf.category.id),
+                ConfigurationService.loadSettingCategories()])
+                .then(function(results) {
+                    loadSettings(categoryConf, results[0].data, ConfigurationService, results[3].data);
+                    categoryConf.groups = results[1].data;
+                    categoryConf.group = results[2].status === 200 ? results[2].data : null;
+                    categoryConf.removeGroupLink = unlinkGroup(categoryConf, GroupService, load);
+                    categoryConf.loading = false;
+                }, function() {
+                    categoryConf.loading = false;
+                });
         };
         load();
+
+        categoryConf.selectGroup = selectGroup(categoryConf);
+        categoryConf.groupTypes = groupTypes;
+        categoryConf.groupMatchTypes = groupMatchTypes;
+
 
         categoryConf.saveSettings = function(frm) {
             if(!frm.$valid) {
                 return;
             }
             categoryConf.loading = true;
+
             ConfigurationService.updateCategoryConfig(categoryConf.category.id, categoryConf.event.id, categoryConf.settings).then(function() {
-                load();
+                if(categoryConf.group) {
+                    GroupService.linkTo(categoryConf.group).then(function() {
+                        load();
+                    });
+                } else {
+                    load();
+                }
             }, function(e) {
                 alert(e.data);
                 categoryConf.loading = false;
@@ -441,7 +574,7 @@
             load();
         });
     }
-    CategoryConfigurationController.$inject = ['ConfigurationService', '$rootScope'];
+    CategoryConfigurationController.$inject = ['ConfigurationService', '$rootScope', 'GroupService', '$q'];
 
     function basicConfigurationNeeded($uibModal, ConfigurationService, EventService, $q, $window) {
         return {
@@ -483,15 +616,12 @@
                                 MAPS_HERE_APP_CODE: _.find(settings['MAP'], function(e) {return e.key === 'MAPS_HERE_APP_CODE';})
                             };
                         });
-                        ctrl.saveSettings = function(frm, settings, pluginSettings) {
+                        ctrl.saveSettings = function(frm, settings) {
                             if(!frm.$valid) {
                                 return;
                             }
                             ctrl.loading = true;
                             var promises = [ConfigurationService.bulkUpdate(settings)];
-                            if(angular.isDefined(pluginSettings)) {
-                                promises.push(ConfigurationService.bulkUpdatePlugins(pluginSettings));
-                            }
                             $q.all(promises).then(function() {
                                 ctrl.loading = false;
                                 $scope.$close(true);

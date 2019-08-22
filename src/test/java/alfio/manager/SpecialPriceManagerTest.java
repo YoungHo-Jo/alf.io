@@ -17,63 +17,72 @@
 package alfio.manager;
 
 import alfio.manager.i18n.I18nManager;
+import alfio.manager.i18n.MessageSourceManager;
 import alfio.manager.support.TextTemplateGenerator;
+import alfio.manager.system.ConfigurationLevel;
+import alfio.manager.system.ConfigurationManager;
 import alfio.model.ContentLanguage;
 import alfio.model.Event;
 import alfio.model.SpecialPrice;
 import alfio.model.TicketCategory;
 import alfio.model.modification.SendCodeModification;
+import alfio.model.system.ConfigurationKeyValuePathLevel;
 import alfio.model.user.Organization;
 import alfio.repository.SpecialPriceRepository;
 import alfio.util.TemplateManager;
 import alfio.util.TemplateResource;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.mockito.Matchers;
-import org.mockito.Mock;
-import org.mockito.runners.MockitoJUnitRunner;
 import org.springframework.context.MessageSource;
 
 import java.time.ZoneId;
 import java.util.*;
 
+import static alfio.model.system.ConfigurationKeys.USE_PARTNER_CODE_INSTEAD_OF_PROMOTIONAL;
 import static java.util.Arrays.asList;
 import static java.util.Collections.singletonList;
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
 
 @SuppressWarnings("unchecked")
-@RunWith(MockitoJUnitRunner.class)
 public class SpecialPriceManagerTest {
 
-    @Mock
     private EventManager eventManager;
-    @Mock
     private Event event;
-    @Mock
     private Organization organization;
-    @Mock
     private TicketCategory ticketCategory;
-    @Mock
     private NotificationManager notificationManager;
-    @Mock
     private SpecialPriceRepository specialPriceRepository;
-    @Mock
     private TemplateManager templateManager;
-    @Mock
     private MessageSource messageSource;
-    @Mock
+    private MessageSourceManager messageSourceManager;
     private I18nManager i18nManager;
     private SpecialPriceManager specialPriceManager;
+    private ConfigurationManager configurationManager;
 
-    @Before
+    @BeforeEach
     public void init() {
-        List<SpecialPrice> specialPrices = asList(new SpecialPrice(0, "123", 0, 0, "FREE", null, null, null, null), new SpecialPrice(0, "456", 0, 0, "FREE", null, null, null, null));
+        eventManager = mock(EventManager.class);
+        event = mock(Event.class);
+        organization = mock(Organization.class);
+        ticketCategory = mock(TicketCategory.class);
+        notificationManager = mock(NotificationManager.class);
+        specialPriceRepository = mock(SpecialPriceRepository.class);
+        templateManager = mock(TemplateManager.class);
+        messageSourceManager = mock(MessageSourceManager.class);
+        messageSource = mock(MessageSource.class);
+        i18nManager = mock(I18nManager.class);
+        configurationManager = mock(ConfigurationManager.class);
+
+        List<SpecialPrice> specialPrices = asList(new SpecialPrice(0, "123", 0, 0, "FREE", null, null, null, null), new SpecialPrice(0, "456", 0, 0, "FREE", null, null, null,  null));
         when(i18nManager.getEventLanguages(anyInt())).thenReturn(Collections.singletonList(ContentLanguage.ITALIAN));
+        when(messageSourceManager.getMessageSourceForEvent(any())).thenReturn(messageSource);
+        when(messageSourceManager.getRootMessageSource()).thenReturn(messageSource);
         when(messageSource.getMessage(anyString(), any(), any())).thenReturn("text");
         when(eventManager.getSingleEvent(anyString(), anyString())).thenReturn(event);
+        when(eventManager.getEventAndOrganizationId(anyString(), anyString())).thenReturn(event);
         when(eventManager.loadTicketCategories(eq(event))).thenReturn(Collections.singletonList(ticketCategory));
         when(ticketCategory.getId()).thenReturn(0);
         when(specialPriceRepository.findActiveByCategoryId(eq(0))).thenReturn(specialPrices);
@@ -85,7 +94,7 @@ public class SpecialPriceManagerTest {
         when(event.getZoneId()).thenReturn(ZoneId.systemDefault());
         when(specialPriceRepository.markAsSent(any(), anyString(), anyString(), anyString())).thenReturn(1);
         setRestricted(ticketCategory, true);
-        specialPriceManager = new SpecialPriceManager(eventManager, notificationManager, specialPriceRepository, templateManager, messageSource, i18nManager);
+        specialPriceManager = new SpecialPriceManager(eventManager, notificationManager, specialPriceRepository, templateManager, messageSourceManager, i18nManager, configurationManager);
     }
 
     @Test
@@ -95,60 +104,53 @@ public class SpecialPriceManagerTest {
         testAssigneeLink(specialPriceManager, CODES_REQUESTED);
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void validationErrorCategoryNotRestricted() throws Exception {
         setRestricted(ticketCategory, false);
-        specialPriceManager.linkAssigneeToCode(Collections.emptyList(), "test", 0, "username");
+        Assertions.assertThrows(IllegalArgumentException.class, () -> specialPriceManager.linkAssigneeToCode(Collections.emptyList(), "test", 0, "username"));
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void validationErrorTooManyCodesRequested() throws Exception {
-        List<SendCodeModification> oneMore = new ArrayList<>();
-        oneMore.addAll(CODES_REQUESTED);
+        List<SendCodeModification> oneMore = new ArrayList<>(CODES_REQUESTED);
         oneMore.add(new SendCodeModification("123", "", "", ""));
-        specialPriceManager.linkAssigneeToCode(oneMore, "test", 0, "username");
+        Assertions.assertThrows(IllegalArgumentException.class, () -> specialPriceManager.linkAssigneeToCode(oneMore, "test", 0, "username"));
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void validationErrorRequestedCodeIsNotAvailable() throws Exception {
         List<SendCodeModification> notExistingCode = asList(new SendCodeModification("AAA", "A 123", "123@123", "it"), new SendCodeModification("456", "A 456", "456@456", "en"));
-        specialPriceManager.linkAssigneeToCode(notExistingCode, "test", 0, "username");
+        Assertions.assertThrows(IllegalArgumentException.class, () -> specialPriceManager.linkAssigneeToCode(notExistingCode, "test", 0, "username"));
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void validationErrorCodeRequestedTwice() throws Exception {
         List<SendCodeModification> duplicatedCodes = asList(new SendCodeModification("123", "A 123", "123@123", "it"), new SendCodeModification("123", "A 456", "456@456", "en"));
-        specialPriceManager.linkAssigneeToCode(duplicatedCodes, "test", 0, "username");
+        Assertions.assertThrows(IllegalArgumentException.class, () -> specialPriceManager.linkAssigneeToCode(duplicatedCodes, "test", 0, "username"));
     }
 
     @Test
     public void sendAllCodes() throws Exception {
+        when(configurationManager.getFor(eq(USE_PARTNER_CODE_INSTEAD_OF_PROMOTIONAL), any()))
+            .thenReturn(new ConfigurationManager.MaybeConfiguration(USE_PARTNER_CODE_INSTEAD_OF_PROMOTIONAL));
         assertTrue(specialPriceManager.sendCodeToAssignee(CODES_REQUESTED, "", 0, ""));
-        verify(notificationManager, times(CODES_REQUESTED.size())).sendSimpleEmail(eq(event), anyString(), anyString(), Matchers.any());
+        verify(notificationManager, times(CODES_REQUESTED.size())).sendSimpleEmail(eq(event), isNull(), anyString(), anyString(), any());
     }
 
     @Test
     public void sendSuccessfulComplete() throws Exception {
-        assertTrue(specialPriceManager.sendCodeToAssignee(singletonList(new SendCodeModification("123", "me", "me@domain.com", "it")), "", 0, ""));
-        ArgumentCaptor<TextTemplateGenerator> templateCaptor = ArgumentCaptor.forClass(TextTemplateGenerator.class);
-        verify(notificationManager).sendSimpleEmail(eq(event), eq("me@domain.com"), anyString(), templateCaptor.capture());
-        templateCaptor.getValue().generate();
-        ArgumentCaptor<Map> captor = ArgumentCaptor.forClass(Map.class);
-        verify(templateManager).renderTemplate(any(Event.class), eq(TemplateResource.SEND_RESERVED_CODE), captor.capture(), eq(Locale.ITALIAN));
-        Map<String, Object> model = captor.getValue();
-        assertEquals("123", model.get("code"));
-        assertEquals(event, model.get("event"));
-        assertEquals(organization, model.get("organization"));
-        assertEquals("http://my-event", model.get("eventPage"));
-        assertEquals("me", model.get("assignee"));
-        verify(messageSource).getMessage(eq("email-code.subject"), eq(new Object[]{"Event Name"}), eq(Locale.ITALIAN));
+        when(configurationManager.getFor(eq(USE_PARTNER_CODE_INSTEAD_OF_PROMOTIONAL), any()))
+            .thenReturn(new ConfigurationManager.MaybeConfiguration(USE_PARTNER_CODE_INSTEAD_OF_PROMOTIONAL));
+        sendMessage(null);
     }
 
     @Test
     public void trimLanguageTag() throws Exception {
+        when(configurationManager.getFor(eq(USE_PARTNER_CODE_INSTEAD_OF_PROMOTIONAL), any()))
+            .thenReturn(new ConfigurationManager.MaybeConfiguration(USE_PARTNER_CODE_INSTEAD_OF_PROMOTIONAL));
         assertTrue(specialPriceManager.sendCodeToAssignee(singletonList(new SendCodeModification("123", "me", "me@domain.com", " it")), "", 0, ""));
         ArgumentCaptor<TextTemplateGenerator> templateCaptor = ArgumentCaptor.forClass(TextTemplateGenerator.class);
-        verify(notificationManager).sendSimpleEmail(eq(event), eq("me@domain.com"), anyString(), templateCaptor.capture());
+        verify(notificationManager).sendSimpleEmail(eq(event), isNull(), eq("me@domain.com"), anyString(), templateCaptor.capture());
         templateCaptor.getValue().generate();
         ArgumentCaptor<Map> captor = ArgumentCaptor.forClass(Map.class);
         verify(templateManager).renderTemplate(any(Event.class), eq(TemplateResource.SEND_RESERVED_CODE), captor.capture(), eq(Locale.ITALIAN));
@@ -158,7 +160,31 @@ public class SpecialPriceManagerTest {
         assertEquals(organization, model.get("organization"));
         assertEquals("http://my-event", model.get("eventPage"));
         assertEquals("me", model.get("assignee"));
-        verify(messageSource).getMessage(eq("email-code.subject"), eq(new Object[]{"Event Name"}), eq(Locale.ITALIAN));
+        verify(messageSource).getMessage(eq("email-code.subject"), eq(new Object[]{"Event Name", null}), eq(Locale.ITALIAN));
+    }
+
+    @Test
+    void usePartnerCode() {
+        when(messageSource.getMessage(eq("show-event.promo-code-type.partner"), isNull(), isNull(), any())).thenReturn("Partner");
+        when(configurationManager.getFor(eq(USE_PARTNER_CODE_INSTEAD_OF_PROMOTIONAL), any()))
+            .thenReturn(new ConfigurationManager.MaybeConfiguration(USE_PARTNER_CODE_INSTEAD_OF_PROMOTIONAL, new ConfigurationKeyValuePathLevel(null, "true", null)));
+        sendMessage("Partner");
+    }
+
+    private void sendMessage(String promoCodeDescription) {
+        assertTrue(specialPriceManager.sendCodeToAssignee(singletonList(new SendCodeModification("123", "me", "me@domain.com", "it")), "", 0, ""));
+        ArgumentCaptor<TextTemplateGenerator> templateCaptor = ArgumentCaptor.forClass(TextTemplateGenerator.class);
+        verify(notificationManager).sendSimpleEmail(eq(event), isNull(), eq("me@domain.com"), anyString(), templateCaptor.capture());
+        templateCaptor.getValue().generate();
+        ArgumentCaptor<Map> captor = ArgumentCaptor.forClass(Map.class);
+        verify(templateManager).renderTemplate(any(Event.class), eq(TemplateResource.SEND_RESERVED_CODE), captor.capture(), eq(Locale.ITALIAN));
+        Map<String, Object> model = captor.getValue();
+        assertEquals("123", model.get("code"));
+        assertEquals(event, model.get("event"));
+        assertEquals(organization, model.get("organization"));
+        assertEquals("http://my-event", model.get("eventPage"));
+        assertEquals("me", model.get("assignee"));
+        verify(messageSource).getMessage(eq("email-code.subject"), eq(new Object[]{"Event Name", promoCodeDescription}), eq(Locale.ITALIAN));
     }
 
     private static void setRestricted(TicketCategory ticketCategory, boolean restricted) {

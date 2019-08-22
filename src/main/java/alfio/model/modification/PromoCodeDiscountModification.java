@@ -16,15 +16,19 @@
  */
 package alfio.model.modification;
 
-import java.math.BigDecimal;
-import java.util.List;
-
-import lombok.Getter;
+import alfio.model.PromoCodeDiscount;
 import alfio.model.PromoCodeDiscount.DiscountType;
 import alfio.util.MonetaryUtil;
-
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.Getter;
+
+import java.math.BigDecimal;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.stream.Collectors;
 
 @Getter
 public class PromoCodeDiscountModification {
@@ -38,18 +42,30 @@ public class PromoCodeDiscountModification {
     private final DiscountType discountType;
     private final List<Integer> categories;
     private final Integer utcOffset;
+    private final Integer maxUsage;
+    private final String description;
+    private final String emailReference;
+    private final PromoCodeDiscount.CodeType codeType;
+    private final Integer hiddenCategoryId;
+
 
     @JsonCreator
     public PromoCodeDiscountModification(
-            @JsonProperty("organizationId") Integer organizationId,
-            @JsonProperty("eventId") Integer eventId,
-            @JsonProperty("promoCode") String promoCode,
-            @JsonProperty("start") DateTimeModification start,
-            @JsonProperty("end") DateTimeModification end,
-            @JsonProperty("discountAmount") BigDecimal discountAmount,
-            @JsonProperty("discountType") DiscountType discountType,
-            @JsonProperty("categories") List<Integer> categories,
-            @JsonProperty("utcOffset") Integer utcOffset) {
+        @JsonProperty("organizationId") Integer organizationId,
+        @JsonProperty("eventId") Integer eventId,
+        @JsonProperty("promoCode") String promoCode,
+        @JsonProperty("start") DateTimeModification start,
+        @JsonProperty("end") DateTimeModification end,
+        @JsonProperty("discountAmount") BigDecimal discountAmount,
+        @JsonProperty("discountType") DiscountType discountType,
+        @JsonProperty("categories") List<Integer> categories,
+        @JsonProperty("utcOffset") Integer utcOffset,
+        @JsonProperty("maxUsage") Integer maxUsage,
+        @JsonProperty("description") String description,
+        @JsonProperty("emailReference") String emailReference,
+        @JsonProperty("codeType") PromoCodeDiscount.CodeType codeType,
+        @JsonProperty("hiddenCategoryId") Integer hiddenCategoryId) {
+
         this.organizationId = organizationId;
         this.eventId = eventId;
         this.promoCode = promoCode;
@@ -57,15 +73,30 @@ public class PromoCodeDiscountModification {
         this.end = end;
         this.discountAmount = discountAmount;
         this.discountType = discountType;
-        this.categories = categories;
+        this.categories = Optional.ofNullable(categories).map(l -> l.stream().filter(Objects::nonNull).collect(Collectors.toList())).orElse(Collections.emptyList());
         this.utcOffset = utcOffset;
+        this.maxUsage = maxUsage;
+        this.description = description;
+        this.emailReference = emailReference;
+        this.codeType = Optional.ofNullable(codeType).orElse(PromoCodeDiscount.CodeType.DISCOUNT);
+        this.hiddenCategoryId = hiddenCategoryId;
     }
     
-    public int getDiscountAsPercent() {
-        return discountAmount.intValue();
+    private int getDiscountAsPercent() {
+        return Optional.ofNullable(discountAmount).map(BigDecimal::intValue).orElse(0);
     }
     
-    public int getDiscountInCents() {
-        return MonetaryUtil.unitToCents(discountAmount);
+    private int getDiscountInCents(String currencyCode) {
+        return MonetaryUtil.unitToCents(discountAmount, currencyCode);
+    }
+
+    public int getDiscountValue(String currencyCode) {
+        if(codeType != PromoCodeDiscount.CodeType.DISCOUNT) {
+            return 0;
+        }
+        if(discountType == DiscountType.PERCENTAGE) {
+            return getDiscountAsPercent();
+        }
+        return getDiscountInCents(currencyCode);
     }
 }

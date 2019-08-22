@@ -44,7 +44,7 @@
         };
     }
 
-    function ReservationImportCtrl(AdminImportService, PriceCalculator, $timeout, $state) {
+    function ReservationImportCtrl(AdminImportService, PriceCalculator, $timeout, $state, ConfigurationService, $q) {
         var ctrl = this;
 
         var handleError = function(error) {
@@ -58,6 +58,7 @@
         var init = function() {
             ctrl.createSingleReservations = false;
             ctrl.reassignmentForbidden = false;
+            ctrl.singleReservationsAllowed = true;
             var expiration = moment().add(1, 'days').endOf('day');
             ctrl.reservation = {
                 expiration: {
@@ -65,7 +66,11 @@
                     time: expiration.format('HH:mm')
                 },
                 customerData: {},
-                ticketsInfo: []
+                ticketsInfo: [],
+                notification: {
+                    customer: false,
+                    attendees: false
+                }
             };
             ctrl.addTicketInfo();
         };
@@ -74,6 +79,11 @@
             ctrl.languages = ctrl.event.contentLanguages;
             init();
 
+            $q.all([ConfigurationService.loadSingleConfigForEvent(ctrl.event.id, 'SEND_TICKETS_AFTER_IMPORT_ATTENDEE'), ConfigurationService.loadSingleConfigForEvent(ctrl.event.id, 'CREATE_RESERVATION_FOR_EACH_IMPORTED_ATTENDEE')])
+                .then(function(result) {
+                    ctrl.reservation.notification.attendees = ('true' === result[0].data); //default is false
+                    ctrl.createSingleReservations = ('true' === result[1].data); //default is false
+                });
             if(ctrl.languages.length === 1) {
                 ctrl.reservation.language = ctrl.languages[0].locale;
             }
@@ -116,6 +126,12 @@
 
         ctrl.resetCategory = function(ticketInfo) {
             ticketInfo.category = {};
+            ctrl.singleReservationsAllowed = ctrl.reservation.ticketsInfo.every(function(ti) {
+                return ti.categoryType === 'existing';
+            });
+            if(!ctrl.singleReservationsAllowed) {
+                ctrl.createSingleReservations = false;
+            }
         };
 
         ctrl.removeTicketInfo = function(index) {
@@ -190,6 +206,18 @@
             delete ctrl.errorMessage;
         };
 
+        ctrl.countParsedAttendees = function(ticketsInfo) {
+            var count = 0;
+            if(ticketsInfo) {
+                for(var i = 0; i < ticketsInfo.length; i++) {
+                    if(ticketsInfo[i] && ticketsInfo[i].attendees) {
+                        count += ticketsInfo[i].attendees.length;
+                    }
+                }
+            }
+            return count;
+        }
+
         var internalParseFileContent = function(content) {
             var self = this;
             self.attendees = [];
@@ -235,6 +263,9 @@
                     complete: function() {
                         ctrl.parsing = false;
                         self.attendees = attendees;
+                        if(attendees.length > 100) {
+                            ctrl.createSingleReservations = true;
+                        }
                     }
                 });
             }, 100);

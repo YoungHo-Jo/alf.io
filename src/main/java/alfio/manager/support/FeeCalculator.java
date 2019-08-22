@@ -16,13 +16,14 @@
  */
 package alfio.manager.support;
 
+import alfio.manager.system.ConfigurationLevel;
 import alfio.manager.system.ConfigurationManager;
-import alfio.model.Event;
-import alfio.model.system.Configuration;
+import alfio.model.EventAndOrganizationId;
 import alfio.util.MonetaryUtil;
 
 import java.math.BigDecimal;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.BiFunction;
 
 import static alfio.model.system.ConfigurationKeys.*;
@@ -33,32 +34,35 @@ public class FeeCalculator {
     private final BigDecimal minimumFee;
     private final boolean percentage;
     private final int numTickets;
+    private final String currencyCode;
 
-    private FeeCalculator(String feeAsString, String minimumFeeAsString, int numTickets) {
+    private FeeCalculator(String feeAsString, String minimumFeeAsString, String currencyCode, int numTickets) {
         this.percentage = feeAsString.endsWith("%");
         this.fee = new BigDecimal(defaultIfEmpty(substringBefore(feeAsString, "%"), "0"));
         this.minimumFee = new BigDecimal(defaultIfEmpty(trimToNull(minimumFeeAsString), "0"));
         this.numTickets = numTickets;
+        this.currencyCode = currencyCode;
     }
 
     private long calculate(long price) {
-        long result = percentage ? MonetaryUtil.calcPercentage(price, fee, BigDecimal::longValueExact) : MonetaryUtil.unitToCents(fee);
-        long minFee = MonetaryUtil.unitToCents(minimumFee, BigDecimal::longValueExact) * numTickets;
+        long result = percentage ? MonetaryUtil.calcPercentage(price, fee, BigDecimal::longValueExact) : MonetaryUtil.unitToCents(fee, currencyCode);
+        long minFee = MonetaryUtil.unitToCents(minimumFee, currencyCode, BigDecimal::longValueExact) * numTickets;
         return Math.max(result, minFee);
     }
 
-    public static BiFunction<Integer, Long, Optional<Long>> getCalculator(Event event, ConfigurationManager configurationManager) {
+    public static BiFunction<Integer, Long, Optional<Long>> getCalculator(EventAndOrganizationId event, ConfigurationManager configurationManager, String currencyCode) {
         return (numTickets, amountInCent) -> {
             if(isPlatformModeEnabled(event, configurationManager)) {
-                String feeAsString = configurationManager.getStringConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), PLATFORM_FEE), "0");
-                String minimumFee = configurationManager.getStringConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), PLATFORM_MINIMUM_FEE), "0");
-                return Optional.of(new FeeCalculator(feeAsString, minimumFee, numTickets).calculate(amountInCent));
+                var fees = configurationManager.getFor(Set.of(PLATFORM_FEE, PLATFORM_MINIMUM_FEE), ConfigurationLevel.event(event));
+                String feeAsString = fees.get(PLATFORM_FEE).getValueOrDefault("0");
+                String minimumFee = fees.get(PLATFORM_MINIMUM_FEE).getValueOrDefault("0");
+                return Optional.of(new FeeCalculator(feeAsString, minimumFee, currencyCode, numTickets).calculate(amountInCent));
             }
             return Optional.empty();
         };
     }
 
-    private static boolean isPlatformModeEnabled(Event event, ConfigurationManager configurationManager) {
-        return configurationManager.getBooleanConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), PLATFORM_MODE_ENABLED), false);
+    private static boolean isPlatformModeEnabled(EventAndOrganizationId event, ConfigurationManager configurationManager) {
+        return configurationManager.getFor(PLATFORM_MODE_ENABLED, ConfigurationLevel.event(event)).getValueAsBooleanOrDefault(false);
     }
 }

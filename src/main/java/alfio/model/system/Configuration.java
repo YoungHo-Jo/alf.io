@@ -16,6 +16,7 @@
  */
 package alfio.model.system;
 
+import alfio.model.EventAndOrganizationId;
 import ch.digitalfondue.npjt.ConstructorAnnotationRowMapper.Column;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -23,9 +24,6 @@ import org.apache.commons.lang3.builder.CompareToBuilder;
 import org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.commons.lang3.builder.HashCodeBuilder;
 
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.Optional;
 import java.util.function.Function;
 
 @Getter
@@ -43,13 +41,12 @@ public class Configuration implements Comparable<Configuration> {
     public Configuration(@Column("id") int id,
                          @Column("c_key") String key,
                          @Column("c_value") String value,
-                         @Column("description") String description,
                          @Column("configuration_path_level") ConfigurationPathLevel configurationPathLevel) {
         this.id = id;
         this.key = key;
         this.value = value;
-        this.description = description;
-        this.configurationKey = ConfigurationKeys.valueOf(key);
+        this.configurationKey = ConfigurationKeys.safeValueOf(key);
+        this.description = configurationKey.getDescription();
         this.configurationPathLevel = configurationPathLevel;
         this.basic = this.configurationKey.isBasic();
     }
@@ -198,15 +195,15 @@ public class Configuration implements Comparable<Configuration> {
     }
 
     public static ConfigurationPathKey from(int organizationId, ConfigurationKeys key) {
-        return from(Optional.of(organizationId), Optional.empty(), Optional.empty(), key);
+        return getOrganizationConfiguration(organizationId, key);
     }
 
-    public static ConfigurationPathKey from(int organizationId, int eventId, ConfigurationKeys key) {
-        return from(Optional.of(organizationId), Optional.of(eventId), Optional.empty(), key);
+    public static ConfigurationPathKey from(EventAndOrganizationId eventAndOrganizationId, ConfigurationKeys key) {
+        return getEventConfiguration(eventAndOrganizationId.getOrganizationId(), eventAndOrganizationId.getId(), key);
     }
 
-    public static Function<ConfigurationKeys, ConfigurationPathKey> from(int organizationId, int eventId) {
-        return (p) -> from(organizationId, eventId, p);
+    public static Function<ConfigurationKeys, ConfigurationPathKey> from(EventAndOrganizationId e) {
+        return p -> from(e, p);
     }
 
     public static Function<ConfigurationKeys, ConfigurationPathKey> from(int organizationId) {
@@ -214,28 +211,6 @@ public class Configuration implements Comparable<Configuration> {
     }
 
     public static ConfigurationPathKey from(int organizationId, int eventId, int ticketCategoryId, ConfigurationKeys key) {
-        return from(Optional.of(organizationId), Optional.of(eventId), Optional.of(ticketCategoryId), key);
+        return getTicketCategoryConfiguration(organizationId, eventId, ticketCategoryId, key);
     }
-
-    private static ConfigurationPathKey from(Optional<Integer> organizationId, Optional<Integer> eventId, Optional<Integer> ticketCategoryId, ConfigurationKeys key) {
-        boolean organizationAvailable = organizationId.isPresent();
-        boolean eventAvailable = eventId.isPresent();
-        boolean categoryAvailable = ticketCategoryId.isPresent();
-        ConfigurationPathLevel mostSensible = Arrays.stream(ConfigurationPathLevel.values())
-            .sorted(Comparator.<ConfigurationPathLevel>naturalOrder().reversed())
-            .filter(path -> path == ConfigurationPathLevel.ORGANIZATION && organizationAvailable
-                || path == ConfigurationPathLevel.EVENT && organizationAvailable && eventAvailable
-                || path == ConfigurationPathLevel.TICKET_CATEGORY && organizationAvailable && eventAvailable && categoryAvailable)
-            .findFirst().orElse(ConfigurationPathLevel.SYSTEM);
-        switch(mostSensible) {
-            case ORGANIZATION:
-                return getOrganizationConfiguration(organizationId.get(), key);
-            case EVENT:
-                return getEventConfiguration(organizationId.get(), eventId.get(), key);
-            case TICKET_CATEGORY:
-                return getTicketCategoryConfiguration(organizationId.get(), eventId.get(), ticketCategoryId.get(), key);
-        }
-        return getSystemConfiguration(key);
-    }
-
 }

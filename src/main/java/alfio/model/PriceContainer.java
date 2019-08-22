@@ -22,7 +22,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Optional;
-import java.util.function.BiFunction;
+import java.util.function.BinaryOperator;
 import java.util.function.UnaryOperator;
 
 import static alfio.util.MonetaryUtil.HUNDRED;
@@ -31,8 +31,8 @@ import static java.math.RoundingMode.UNNECESSARY;
 
 public interface PriceContainer {
 
-    BiFunction<BigDecimal, BigDecimal, BigDecimal> includedVatExtractor = (price, vatPercentage) -> MonetaryUtil.extractVAT(price, vatPercentage).setScale(2, RoundingMode.HALF_UP);
-    BiFunction<BigDecimal, BigDecimal, BigDecimal> notIncludedVatCalculator = (price, vatPercentage) -> MonetaryUtil.calcVat(price, vatPercentage).setScale(2, RoundingMode.HALF_UP);
+    BinaryOperator<BigDecimal> includedVatExtractor = MonetaryUtil::extractVAT;
+    BinaryOperator<BigDecimal> notIncludedVatCalculator = MonetaryUtil::calcVat;
 
     enum VatStatus {
         NONE((price, vatPercentage) -> BigDecimal.ZERO, UnaryOperator.identity()),
@@ -42,15 +42,19 @@ public interface PriceContainer {
         NOT_INCLUDED_EXEMPT((price, vatPercentage) -> BigDecimal.ZERO, UnaryOperator.identity());
 
         private final UnaryOperator<BigDecimal> transformer;
-        private final BiFunction<BigDecimal, BigDecimal, BigDecimal> extractor;
+        private final BinaryOperator<BigDecimal> extractor;
 
-        VatStatus(BiFunction<BigDecimal, BigDecimal, BigDecimal> extractor,
+        VatStatus(BinaryOperator<BigDecimal> extractor,
                   UnaryOperator<BigDecimal> transformer) {
             this.extractor = extractor;
             this.transformer = transformer;
         }
 
         public BigDecimal extractVat(BigDecimal price, BigDecimal vatPercentage) {
+            return this.extractRawVAT(price, vatPercentage).setScale(2, RoundingMode.HALF_UP);
+        }
+
+        public BigDecimal extractRawVAT(BigDecimal price, BigDecimal vatPercentage) {
             return this.extractor.andThen(transformer).apply(price, vatPercentage);
         }
 
@@ -105,10 +109,14 @@ public interface PriceContainer {
      * @return net + tax
      */
     default BigDecimal getFinalPrice() {
-        final BigDecimal price = MonetaryUtil.centsToUnit(getSrcPriceCts());
+        var vatStatus = getVatStatus();
+        if(getSrcPriceCts() == 0 || vatStatus == null) {
+            return BigDecimal.ZERO;
+        }
+        final BigDecimal price = MonetaryUtil.centsToUnit(getSrcPriceCts(), getCurrencyCode());
         BigDecimal discountedPrice = price.subtract(getAppliedDiscount());
-        if(getVatStatus() != VatStatus.INCLUDED) {
-            return discountedPrice.add(getVAT(discountedPrice, getVatStatus(), getVatPercentageOrZero()));
+        if(vatStatus != VatStatus.INCLUDED) {
+            return discountedPrice.add(getVAT(discountedPrice, vatStatus, getVatPercentageOrZero()));
         } else {
             return discountedPrice;
         }
@@ -118,19 +126,34 @@ public interface PriceContainer {
      * Returns the VAT
      * @return vat
      */
+    @JsonIgnore
     default BigDecimal getVAT() {
-        final BigDecimal price = MonetaryUtil.centsToUnit(getSrcPriceCts());
+        final BigDecimal price = MonetaryUtil.centsToUnit(getSrcPriceCts(), getCurrencyCode());
         return getVAT(price.subtract(getAppliedDiscount()), getVatStatus(), getVatPercentageOrZero());
     }
+
+
+    /**
+     * Returns the VAT, with a reasonable, less error-prone, rounding
+     * @return vat
+     * @see MonetaryUtil#ROUNDING_SCALE
+     */
+    @JsonIgnore
+    default BigDecimal getRawVAT() {
+        final BigDecimal price = MonetaryUtil.centsToUnit(getSrcPriceCts(), getCurrencyCode());
+        return getVatStatus().extractRawVAT(price.subtract(getAppliedDiscount()), getVatPercentageOrZero());
+    }
+
 
     /**
      * @return the discount applied, if any
      */
+    @JsonIgnore
     default BigDecimal getAppliedDiscount() {
         return getDiscount().map(discount -> {
-            final BigDecimal price = MonetaryUtil.centsToUnit(getSrcPriceCts());
+            final BigDecimal price = MonetaryUtil.centsToUnit(getSrcPriceCts(), getCurrencyCode());
             if(discount.getFixedAmount()) {
-                return MonetaryUtil.centsToUnit(discount.getDiscountAmount());
+                return MonetaryUtil.centsToUnit(Math.min(getSrcPriceCts(), discount.getDiscountAmount()), getCurrencyCode());
             } else {
                 int discountAmount = discount.getDiscountAmount();
                 return price.multiply(new BigDecimal(discountAmount).divide(HUNDRED, 2, UNNECESSARY)).setScale(2, HALF_UP);

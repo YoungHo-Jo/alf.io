@@ -16,12 +16,11 @@
  */
 package alfio.model;
 
+import alfio.util.LocaleUtil;
 import lombok.EqualsAndHashCode;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @EqualsAndHashCode
@@ -30,11 +29,15 @@ public class ContentLanguage {
     public static final int ENGLISH_IDENTIFIER = 0b00010;
     public static final ContentLanguage ITALIAN = new ContentLanguage(Locale.ITALIAN, 0b00001, Locale.ITALIAN, "it");
     public static final ContentLanguage ENGLISH = new ContentLanguage(Locale.ENGLISH, ENGLISH_IDENTIFIER, Locale.ENGLISH, "gb");
-    private static final ContentLanguage GERMAN = new ContentLanguage(Locale.GERMAN,   0b00100, Locale.GERMAN, "de");
-    private static final ContentLanguage DUTCH = new ContentLanguage(new Locale("nl"), 0b01000, new Locale("nl"), "nl");
-    private static final ContentLanguage FRENCH = new ContentLanguage(Locale.FRENCH,0b10000, Locale.FRENCH, "fr");
+    public static final ContentLanguage GERMAN = new ContentLanguage(Locale.GERMAN,   0b00100, Locale.GERMAN, "de");
+    public static final ContentLanguage DUTCH = new ContentLanguage(LocaleUtil.forLanguageTag("nl"), 0b01000, LocaleUtil.forLanguageTag("nl"), "nl");
+    public static final ContentLanguage FRENCH = new ContentLanguage(Locale.FRENCH,0b10000, Locale.FRENCH, "fr");
+    public static final ContentLanguage ROMANIAN = new ContentLanguage(LocaleUtil.forLanguageTag("ro"),0b100000, LocaleUtil.forLanguageTag("ro"), "ro");
+    public static final ContentLanguage PORTUGUESE = new ContentLanguage(LocaleUtil.forLanguageTag("pt"),0b1000000, LocaleUtil.forLanguageTag("pt"), "pt");
+    public static final ContentLanguage TURKISH = new ContentLanguage(LocaleUtil.forLanguageTag("tr"),0b10000000, LocaleUtil.forLanguageTag("tr"), "tr");
 
-    public static final List<ContentLanguage> ALL_LANGUAGES = Arrays.asList(ITALIAN, ENGLISH, GERMAN, DUTCH,FRENCH);
+    public static final List<ContentLanguage> ALL_LANGUAGES = List.of(ITALIAN, ENGLISH, GERMAN, DUTCH, FRENCH, ROMANIAN, PORTUGUESE, TURKISH);
+    public static final int ALL_LANGUAGES_IDENTIFIER = ALL_LANGUAGES.stream().mapToInt(ContentLanguage::getValue).reduce(0, (a,b) -> a|b);
 
     public static List<ContentLanguage> findAllFor(int bitMask) {
         return ALL_LANGUAGES.stream()
@@ -70,13 +73,5 @@ public class ContentLanguage {
 
     public int getValue() {
         return value;
-    }
-
-    private ContentLanguage switchDisplayLocaleTo(Locale displayLocale) {
-        return new ContentLanguage(this.locale, this.value, displayLocale, this.flag);
-    }
-
-    public static Function<ContentLanguage, ContentLanguage> toLanguage(Locale targetLanguage) {
-        return (current) -> current.switchDisplayLocaleTo(targetLanguage);
     }
 }

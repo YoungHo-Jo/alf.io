@@ -16,7 +16,6 @@
  */
 package alfio.model.decorator;
 
-import alfio.model.Event;
 import alfio.model.PromoCodeDiscount;
 import alfio.model.SummaryPriceContainer;
 import alfio.model.Ticket;
@@ -35,7 +34,6 @@ public class TicketPriceContainer implements SummaryPriceContainer {
     @Delegate(excludes = OverridePriceContainer.class)
     private final Ticket ticket;
     private final PromoCodeDiscount promoCodeDiscount;
-    private final String currencyCode;
     private final BigDecimal vatPercentage;
     private final VatStatus vatStatus;
 
@@ -43,11 +41,6 @@ public class TicketPriceContainer implements SummaryPriceContainer {
     public Optional<PromoCodeDiscount> getDiscount() {
         return Optional.ofNullable(promoCodeDiscount)
             .filter(discount -> discount.getCategories().isEmpty() || discount.getCategories().contains(getCategoryId()));
-    }
-
-    @Override
-    public String getCurrencyCode() {
-        return currencyCode;
     }
 
     @Override
@@ -62,19 +55,14 @@ public class TicketPriceContainer implements SummaryPriceContainer {
 
     public int getSummarySrcPriceCts() {
         if(VatStatus.isVatExempt(getVatStatus())) {
-            return unitToCents(getFinalPrice());
+            return unitToCents(getFinalPrice(), getCurrencyCode());
         }
         return getSrcPriceCts();
     }
 
-    public static TicketPriceContainer from(Ticket t, VatStatus reservationVatStatus, Event e, PromoCodeDiscount discount) {
-        VatStatus vatStatus = Optional.ofNullable(reservationVatStatus).filter(s -> s == VatStatus.INCLUDED_EXEMPT || s == VatStatus.NOT_INCLUDED_EXEMPT).orElseGet(e::getVatStatus);
-        return new TicketPriceContainer(t, discount, e.getCurrency(), e.getVat(), vatStatus);
-    }
-
-    @Override
-    public Integer getVatCts() {
-        return ticket.getVatCts();
+    public static TicketPriceContainer from(Ticket t, VatStatus reservationVatStatus, BigDecimal vat, VatStatus eventVatStatus, PromoCodeDiscount discount) {
+        VatStatus vatStatus = Optional.ofNullable(reservationVatStatus).orElse(eventVatStatus);
+        return new TicketPriceContainer(t, discount, vat, vatStatus);
     }
 
     @Override

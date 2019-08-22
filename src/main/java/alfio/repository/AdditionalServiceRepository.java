@@ -18,19 +18,36 @@ package alfio.repository;
 
 import alfio.model.AdditionalService;
 import ch.digitalfondue.npjt.*;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 
 import java.math.BigDecimal;
 import java.time.ZonedDateTime;
-import java.util.List;
+import java.util.*;
 
 @QueryRepository
 public interface AdditionalServiceRepository {
 
-    @Query("select * from additional_service where event_id_fk = :eventId order by ordinal")
+    @Query("select * from additional_service_with_currency where event_id_fk = :eventId order by ordinal")
     List<AdditionalService> loadAllForEvent(@Bind("eventId") int eventId);
 
-    @Query("select * from additional_service where id = :id and event_id_fk = :eventId")
+    NamedParameterJdbcTemplate getJdbcTemplate();
+
+    default Map<Integer, Integer> getCount(int eventId) {
+        Map<Integer, Integer> res = new HashMap<>();
+        getJdbcTemplate().query("select count(*) as cnt, additional_service_id_fk from additional_service_item where event_id_fk = :eventId group by additional_service_id_fk",
+            Collections.singletonMap("eventId", eventId),
+            rse -> {
+                res.put(rse.getInt("additional_service_id_fk"), rse.getInt("cnt"));
+            }
+        );
+        return res;
+    }
+
+    @Query("select * from additional_service_with_currency where id = :id and event_id_fk = :eventId")
     AdditionalService getById(@Bind("id") int id, @Bind("eventId") int eventId);
+
+    @Query("select * from additional_service_with_currency where id = :id and event_id_fk = :eventId")
+    Optional<AdditionalService> getOptionalById(@Bind("id") int id, @Bind("eventId") int eventId);
 
     @Query("delete from additional_service where id = :id and event_id_fk = :eventId")
     int delete(@Bind("id") int id, @Bind("eventId") int eventId);
@@ -52,6 +69,6 @@ public interface AdditionalServiceRepository {
                @Bind("inceptionTs") ZonedDateTime inception, @Bind("expirationTs") ZonedDateTime expiration, @Bind("vat") BigDecimal vat,
                @Bind("vatType") AdditionalService.VatType vatType, @Bind("srcPriceCts") int srcPriceCts);
 
-    @Query("select * from additional_service where event_id_fk = :eventId and supplement_policy = :supplementPolicy order by ordinal")
+    @Query("select * from additional_service_with_currency where event_id_fk = :eventId and supplement_policy = :supplementPolicy order by ordinal")
     List<AdditionalService> findAllInEventWithPolicy(@Bind("eventId") int eventId, @Bind("supplementPolicy") AdditionalService.SupplementPolicy policy);
 }

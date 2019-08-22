@@ -1,79 +1,44 @@
 language: java
-before_script:
-  - psql -c 'create database alfio;' -U postgres
-  - bash .travis.install-mysql-5.7.sh
-  - mysql -u root -e 'CREATE DATABASE alfio CHARACTER SET utf8 COLLATE utf8_bin;'
-  - mysql -u root -e 'select VERSION()'
-  - mysql -u root -e 'select @@sql_mode'
-dist: trusty
+dist: xenial
 sudo: required
 install:
-    - TERM=dumb ./gradlew -q assemble
+  - TERM=dumb ./gradlew -q assemble
 matrix:
-    include:
-        - jdk: oraclejdk8
-          env: PROFILE="-Ddbenv=HSQLDB"
-          dist: precise
-          addons:
-              apt:
-                  packages:
-                      - mysql-server
-                      - mysql-client-core-5.5
-                      - mysql-client
-        - jdk: oraclejdk8
-          env: PROFILE="-Ddbenv=PGSQL-TRAVIS -Dpgsql9.1"
-          dist: precise
-          addons:
-              postgresql: "9.1"
-              apt:
-                  packages:
-                      - mysql-server
-                      - mysql-client-core-5.5
-                      - mysql-client
-        - jdk: oraclejdk8
-          env: PROFILE="-Ddbenv=PGSQL-TRAVIS -Dpgsql9.4"
-          dist: precise
-          addons:
-              postgresql: "9.4"
-              apt:
-                  packages:
-                      - mysql-server
-                      - mysql-client-core-5.5
-                      - mysql-client
-        - jdk: oraclejdk8
-          env: PROFILE="-Ddbenv=MYSQL -Dmysql5.5"
-          dist: precise
-          addons:
-              apt:
-                  packages:
-                      - mysql-server
-                      - mysql-client-core-5.5
-                      - mysql-client
-        - jdk: oraclejdk8
-          env: PROFILE="-Ddbenv=MYSQL -Dmysql5.6"
-          addons:
-              apt:
-                  packages:
-                      - mysql-server-5.6
-                      - mysql-client-core-5.6
-                      - mysql-client-5.6    
-        - jdk: oraclejdk8
-          env: PROFILE="-Ddbenv=MYSQL -Dmariadb10.1"
-          addons:
-              mariadb: 10.1
-        - jdk: oraclejdk8
-          env: PROFILE="-Ddbenv=MYSQL -Dmysql.5.7"
-
+  include:
+    - name: postgresql 9.6
+      jdk: openjdk11
+      env: PROFILE="-Dspring.profiles.active=travis -Ddbenv=PGSQL-TRAVIS -Dpgsql9.6"
+      addons:
+        postgresql: "9.6"
+    - name: postgresql 10
+      jdk: openjdk11
+      env: PROFILE="-Dspring.profiles.active=travis -Ddbenv=PGSQL-TRAVIS -Dpgsql10"
+      addons:
+        postgresql: "10"
+    - name: postgresql 11
+      jdk: openjdk11
+      env: PROFILE="-Dspring.profiles.active=travis -Ddbenv=PGSQL-TRAVIS -Dpgsql11"
+      before_install:
+        - sudo apt-get update
+        - sudo apt-get --yes remove postgresql\*
+        - sudo apt-get install -y postgresql-11 postgresql-client-11
+        - sudo cp /etc/postgresql/{9.6,11}/main/pg_hba.conf
+        - sudo service postgresql restart 11
+      services:
+        - postgresql
+      addons:
+        postgresql: "11.2"
+before_script:
+  - psql --version
+  - psql -c 'create database alfio;' -U postgres
 script:
-    - TERM=dumb ./gradlew build jacocoTestReport $PROFILE
+  - TERM=dumb ./gradlew build jacocoTestReport $PROFILE
 after_success:
-    ./gradlew coveralls
-notifications:
-    webhooks:
-      urls: 
-        - https://vdokahpp1h.apigw.ntruss.com/test/test/Nr0XtdeJVd
-      on_start: true
-      on_success: change # default: always
-      on_failure: always # default: always
-      on_cancel:  always # default: always
-      on_error:   always # default: always
+  ./gradlew coveralls
+before_cache:
+    - rm -f  $HOME/.gradle/caches/modules-2/modules-2.lock
+    - rm -fr $HOME/.gradle/caches/*/plugin-resolution/
+cache:
+    directories:
+        - $HOME/.gradle/caches/
+        - $HOME/.gradle/wrapper/

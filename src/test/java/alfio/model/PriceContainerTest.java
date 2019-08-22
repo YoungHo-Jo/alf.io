@@ -19,7 +19,7 @@ package alfio.model;
 import alfio.test.util.PriceContainerImpl;
 import alfio.util.MonetaryUtil;
 import org.apache.commons.lang3.tuple.Pair;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -112,9 +112,9 @@ public class PriceContainerTest {
                 PriceContainer priceContainer = p.getRight();
                 BigDecimal finalPrice = priceContainer.getFinalPrice();
                 Integer price = p.getLeft();
-                BigDecimal netPrice = MonetaryUtil.centsToUnit(price);
+                BigDecimal netPrice = MonetaryUtil.centsToUnit(price, "CHF");
                 BigDecimal vatAmount = finalPrice.subtract(netPrice);
-                int result = MonetaryUtil.unitToCents(vatAmount.subtract(MonetaryUtil.calcVat(netPrice, priceContainer.getVatPercentageOrZero())).abs());
+                int result = MonetaryUtil.unitToCents(vatAmount.subtract(MonetaryUtil.calcVat(netPrice, priceContainer.getVatPercentageOrZero())).abs(), "CHF");
                 if(result >= 2) {
                     BigDecimal calcVatPerc = vatAmount.divide(finalPrice, 5, RoundingMode.HALF_UP).multiply(new BigDecimal("100.00")).setScale(2, RoundingMode.HALF_UP);
                     fail(String.format("Expected percentage: %s, got %s, vat %s v. %s", calcVatPerc, priceContainer.getOptionalVatPercentage(), vatAmount, MonetaryUtil.calcVat(netPrice, priceContainer.getVatPercentageOrZero())));
@@ -122,12 +122,29 @@ public class PriceContainerTest {
             });
     }
 
+    @Test
+    void testDoNotProduceNegativePrices() {
+        var discount = mock(PromoCodeDiscount.class);
+        when(discount.getCodeType()).thenReturn(PromoCodeDiscount.CodeType.DISCOUNT);
+        when(discount.getDiscountType()).thenReturn(PromoCodeDiscount.DiscountType.FIXED_AMOUNT);
+        when(discount.getFixedAmount()).thenReturn(true);
+        when(discount.getDiscountAmount()).thenReturn(3100);
+
+        PriceContainerImpl vs = new PriceContainerImpl(1000, "CHF", new BigDecimal("30.00"), PriceContainer.VatStatus.INCLUDED_EXEMPT, discount);
+        assertEquals(new BigDecimal("0.00"), vs.getFinalPrice());
+    }
+
+    @Test
+    void totalPriceZeroIfVatStatusIsNull() {
+        PriceContainerImpl vs = new PriceContainerImpl(1000, "CHF", new BigDecimal("30.00"), null);
+        assertEquals(BigDecimal.ZERO, vs.getFinalPrice());
+    }
 
     private Stream<Pair<Integer, PriceContainer>> generateTestStream(PriceContainer.VatStatus vatStatus) {
         List<BigDecimal> vatPercentages = IntStream.range(100, 3000)
             .mapToObj(vatCts -> new BigDecimal(vatCts).divide(new BigDecimal("100.00"), 2, RoundingMode.UNNECESSARY))
             .collect(Collectors.toList());
-        return IntStream.range(1, 500_00).
+        return IntStream.range(1, 5_000).
             parallel()
             .boxed()
             .flatMap(i -> vatPercentages.stream().map(vat -> Pair.of(i, new PriceContainerImpl(i, "CHF", vat, vatStatus))));

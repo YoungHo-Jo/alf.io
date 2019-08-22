@@ -16,22 +16,29 @@
  */
 package alfio.model;
 
-import java.math.BigDecimal;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
-import java.util.*;
-
 import alfio.util.Json;
 import ch.digitalfondue.npjt.ConstructorAnnotationRowMapper.Column;
-import alfio.util.MonetaryUtil;
 import com.google.gson.reflect.TypeToken;
 import lombok.Getter;
+import org.apache.commons.collections.CollectionUtils;
+
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 
 @Getter
 public class PromoCodeDiscount {
+
+    public enum CodeType {
+        DISCOUNT,
+        ACCESS
+    }
     
     public enum DiscountType {
-        FIXED_AMOUNT, PERCENTAGE
+        FIXED_AMOUNT, PERCENTAGE, NONE
     }
 
     private final int id;
@@ -43,16 +50,27 @@ public class PromoCodeDiscount {
     private final int discountAmount;
     private final DiscountType discountType;
     private final Set<Integer> categories;
+    private final Integer maxUsage;
+    private final String description;
+    private final String emailReference;
+    private final CodeType codeType;
+    private final Integer hiddenCategoryId;
     
     public PromoCodeDiscount(@Column("id")int id, 
-            @Column("promo_code") String promoCode, 
-            @Column("event_id_fk") Integer eventId,
-            @Column("organization_id_fk") Integer organizationId,
-            @Column("valid_from") ZonedDateTime utcStart, 
-            @Column("valid_to") ZonedDateTime utcEnd, 
-            @Column("discount_amount") int discountAmount,
-            @Column("discount_type") DiscountType discountType,
-            @Column("categories") String categories) {
+                             @Column("promo_code") String promoCode,
+                             @Column("event_id_fk") Integer eventId,
+                             @Column("organization_id_fk") Integer organizationId,
+                             @Column("valid_from") ZonedDateTime utcStart,
+                             @Column("valid_to") ZonedDateTime utcEnd,
+                             @Column("discount_amount") int discountAmount,
+                             @Column("discount_type") DiscountType discountType,
+                             @Column("categories") String categories,
+                             @Column("max_usage") Integer maxUsage,
+                             @Column("description") String description,
+                             @Column("email_reference") String emailReference,
+                             @Column("code_type") CodeType codeType,
+                             @Column("hidden_category_id") Integer hiddenCategoryId) {
+
         this.id = id;
         this.promoCode = promoCode;
         this.eventId = eventId;
@@ -61,12 +79,17 @@ public class PromoCodeDiscount {
         this.utcEnd = utcEnd;
         this.discountAmount = discountAmount;
         this.discountType = discountType;
+        this.maxUsage = maxUsage;
         if(categories != null) {
-            List<Integer> categoriesId = Json.GSON.<List<Integer>>fromJson(categories, new TypeToken<List<Integer>>(){}.getType());
+            List<Integer> categoriesId = Json.GSON.fromJson(categories, new TypeToken<List<Integer>>(){}.getType());
             this.categories = categoriesId == null ? Collections.emptySet() : new TreeSet<>(categoriesId);
         } else {
             this.categories = Collections.emptySet();
         }
+        this.description = description;
+        this.emailReference = emailReference;
+        this.codeType = codeType;
+        this.hiddenCategoryId = hiddenCategoryId;
     }
     
     public boolean isCurrentlyValid(ZoneId eventZoneId, ZonedDateTime now) {
@@ -77,12 +100,15 @@ public class PromoCodeDiscount {
         return now.isAfter(utcEnd.withZoneSameInstant(eventZoneId));
     }
     
-    public BigDecimal getFormattedDiscountAmount() {
-        //TODO: apply this conversion only for some currency. Not all are cent based.
-        return MonetaryUtil.centsToUnit(discountAmount);
-    }
-    
     public boolean getFixedAmount() {
         return DiscountType.FIXED_AMOUNT == discountType;
+    }
+
+    public static Set<Integer> categoriesOrNull(PromoCodeDiscount code) {
+        if(code.codeType == CodeType.DISCOUNT) {
+            Set<Integer> categories = code.getCategories();
+            return CollectionUtils.isEmpty(categories) ? null : categories;
+        }
+        return Set.of(code.hiddenCategoryId);
     }
 }

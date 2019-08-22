@@ -20,14 +20,16 @@ import lombok.experimental.UtilityClass;
 
 import java.time.DayOfWeek;
 import java.time.LocalTime;
-import java.time.temporal.*;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.Temporal;
+import java.time.temporal.TemporalAdjuster;
 import java.util.*;
 
 @UtilityClass
 public class WorkingDaysAdjusters {
 
-    public static final Set<DayOfWeek> MON_FRI = EnumSet.complementOf(EnumSet.of(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY));
-    public static final List<HoursRange> ALL_DAY = Collections.singletonList(new HoursRange(LocalTime.of(8, 0, 0), LocalTime.of(20, 0, 0)));
+    private static final Set<DayOfWeek> MON_FRI = EnumSet.complementOf(EnumSet.of(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY));
+    private static final List<HoursRange> ALL_DAY = Collections.singletonList(new HoursRange(LocalTime.of(8, 0, 0), LocalTime.of(20, 0, 0)));
 
     public static TemporalAdjuster defaultWorkingDays() {
         return temporal -> adjust(temporal, MON_FRI, ALL_DAY);

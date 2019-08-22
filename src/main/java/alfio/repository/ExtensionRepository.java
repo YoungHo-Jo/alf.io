@@ -20,6 +20,7 @@ package alfio.repository;
 import alfio.model.ExtensionSupport;
 import ch.digitalfondue.npjt.*;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -54,16 +55,16 @@ public interface ExtensionRepository {
     int insertEvent(@Bind("extensionId") int extensionId, @Bind("event") String event);
 
     @Query("select es_id from extension_support where path = :path and name = :name")
-    int getExtensionIdFor(@Bind("path") String name, @Bind("name") String path);
+    int getExtensionIdFor(@Bind("path") String path, @Bind("name") String name);
 
     @Query("select script from extension_support where path = :path and name = :name")
     String getScript(@Bind("path") String path, @Bind("name") String name);
 
-    @Query("select script from extension_support where path = :path and name = :name")
-    Optional<String> getMaybeScript(@Bind("path") String path, @Bind("name") String name);
-
     @Query("select * from extension_support where path = :path and name = :name")
     Optional<ExtensionSupport> getSingle(@Bind("path") String path, @Bind("name") String name);
+
+    @Query("select * from extension_support where path in (:paths) and name = :name limit 1")
+    Optional<ExtensionSupport> getSingle(@Bind("paths") Collection<String> paths, @Bind("name") String name);
 
     @Query("delete from extension_event where es_id_fk = (select es_id from extension_support where path = :path and name = :name)")
     int deleteEventsForPath(@Bind("path") String path, @Bind("name") String name);
@@ -142,4 +143,7 @@ public interface ExtensionRepository {
 
     @Query("select distinct ecm_name from extension_configuration_metadata where ecm_es_id_fk = (SELECT es_id from extension_support where path = :path and name = :name) and ecm_mandatory is true")
     List<String> findMandatoryParametersForScript(@Bind("name") String name, @Bind("path") String path);
+
+    @Query("select ecm_id, ecm_name from extension_configuration_metadata where ecm_es_id_fk = :extensionId")
+    List<ExtensionSupport.ExtensionMetadata> findAllParametersForExtension(@Bind("extensionId") int extensionId);
 }

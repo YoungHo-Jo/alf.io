@@ -19,7 +19,6 @@ package alfio.manager;
 import alfio.TestConfiguration;
 import alfio.config.DataSourceConfiguration;
 import alfio.config.Initializer;
-import alfio.config.RepositoryConfiguration;
 import alfio.manager.system.ConfigurationManager;
 import alfio.manager.user.UserManager;
 import alfio.model.*;
@@ -36,11 +35,11 @@ import alfio.repository.user.AuthorityRepository;
 import alfio.repository.user.OrganizationRepository;
 import alfio.repository.user.UserRepository;
 import alfio.test.util.IntegrationTestUtil;
+import alfio.util.BaseIntegrationTest;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.time.DateUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.junit.Before;
-import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,6 +51,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZonedDateTime;
 import java.util.*;
 
 import static alfio.model.modification.DateTimeModification.fromZonedDateTime;
@@ -61,17 +61,12 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 @RunWith(SpringJUnit4ClassRunner.class)
-@ContextConfiguration(classes = {RepositoryConfiguration.class, DataSourceConfiguration.class, TestConfiguration.class})
-@ActiveProfiles({Initializer.PROFILE_DEV, Initializer.PROFILE_DISABLE_JOBS})
+@ContextConfiguration(classes = {DataSourceConfiguration.class, TestConfiguration.class})
+@ActiveProfiles({Initializer.PROFILE_DEV, Initializer.PROFILE_DISABLE_JOBS, Initializer.PROFILE_INTEGRATION_TEST})
 @Transactional
-public class WaitingQueueProcessorIntegrationTest {
+public class WaitingQueueProcessorIntegrationTest extends BaseIntegrationTest {
 
     private static final Map<String, String> DESCRIPTION = Collections.singletonMap("en", "desc");
-
-    @BeforeClass
-    public static void initEnv() {
-        initSystemProperties();
-    }
 
     @Autowired
     private EventManager eventManager;
@@ -114,11 +109,11 @@ public class WaitingQueueProcessorIntegrationTest {
                 new TicketCategoryModification(null, "default", 10,
                         new DateTimeModification(LocalDate.now().plusDays(1), LocalTime.now()),
                         new DateTimeModification(LocalDate.now().plusDays(2), LocalTime.now()),
-                        DESCRIPTION, BigDecimal.TEN, false, "", false, null, null, null, null, null));
+                        DESCRIPTION, BigDecimal.TEN, false, "", false, null, null, null, null, null, 0));
         Pair<Event, String> pair = initEvent(categories, organizationRepository, userManager, eventManager, eventRepository);
         Event event = pair.getKey();
-        waitingQueueManager.subscribe(event, new CustomerName("Giuseppe Garibaldi", "Giuseppe", "Garibaldi", event), "peppino@garibaldi.com", null, Locale.ENGLISH);
-        waitingQueueManager.subscribe(event, new CustomerName("Nino Bixio", "Nino", "Bixio", event), "bixio@mille.org", null, Locale.ITALIAN);
+        waitingQueueManager.subscribe(event, new CustomerName("Giuseppe Garibaldi", "Giuseppe", "Garibaldi", event.mustUseFirstAndLastName()), "peppino@garibaldi.com", null, Locale.ENGLISH);
+        waitingQueueManager.subscribe(event, new CustomerName("Nino Bixio", "Nino", "Bixio", event.mustUseFirstAndLastName()), "bixio@mille.org", null, Locale.ITALIAN);
         assertTrue(waitingQueueRepository.countWaitingPeople(event.getId()) == 2);
 
         waitingQueueSubscriptionProcessor.distributeAvailableSeats(event);
@@ -127,7 +122,7 @@ public class WaitingQueueProcessorIntegrationTest {
         TicketCategoryModification tcm = new TicketCategoryModification(null, "default", 10,
                 new DateTimeModification(LocalDate.now().minusDays(1), LocalTime.now()),
                 new DateTimeModification(LocalDate.now().plusDays(5), LocalTime.now()),
-                DESCRIPTION, BigDecimal.TEN, false, "", true, null, null, null, null, null);
+                DESCRIPTION, BigDecimal.TEN, false, "", true, null, null, null, null, null, 0);
         eventManager.insertCategory(event.getId(), tcm, pair.getValue());
 
         waitingQueueSubscriptionProcessor.distributeAvailableSeats(event);
@@ -159,7 +154,7 @@ public class WaitingQueueProcessorIntegrationTest {
         Pair<String, Event> pair = initSoldOutEvent(true);
         Event event = pair.getRight();
         EventModification eventModification = new EventModification(event.getId(), event.getType(), event.getWebsiteUrl(),
-            event.getExternalUrl(), event.getTermsAndConditionsUrl(), event.getImageUrl(), event.getFileBlobId(), event.getShortName(), event.getDisplayName(),
+            event.getExternalUrl(), event.getTermsAndConditionsUrl(), event.getPrivacyPolicyUrl(), event.getImageUrl(), event.getFileBlobId(), event.getShortName(), event.getDisplayName(),
             event.getOrganizationId(), event.getLocation(), event.getLatitude(), event.getLongitude(), event.getZoneId().getId(), emptyMap(), fromZonedDateTime(event.getBegin()), fromZonedDateTime(event.getEnd()),
             event.getRegularPrice(), event.getCurrency(), eventRepository.countExistingTickets(event.getId()) + 1, event.getVat(), event.isVatIncluded(), event.getAllowedPaymentProxies(),
             Collections.emptyList(), event.isFreeOfCharge(), null, event.getLocales(), Collections.emptyList(), Collections.emptyList());
@@ -178,7 +173,7 @@ public class WaitingQueueProcessorIntegrationTest {
         Pair<String, Event> pair = initSoldOutEvent(false);
         Event event = pair.getRight();
         EventModification eventModification = new EventModification(event.getId(), event.getType(), event.getWebsiteUrl(),
-            event.getExternalUrl(), event.getTermsAndConditionsUrl(), event.getImageUrl(), event.getFileBlobId(), event.getShortName(), event.getDisplayName(),
+            event.getExternalUrl(), event.getTermsAndConditionsUrl(), event.getPrivacyPolicyUrl(), event.getImageUrl(), event.getFileBlobId(), event.getShortName(), event.getDisplayName(),
             event.getOrganizationId(), event.getLocation(), event.getLatitude(), event.getLongitude(), event.getZoneId().getId(), emptyMap(), fromZonedDateTime(event.getBegin()), fromZonedDateTime(event.getEnd()),
             event.getRegularPrice(), event.getCurrency(), eventRepository.countExistingTickets(event.getId()) + 1, event.getVat(), event.isVatIncluded(), event.getAllowedPaymentProxies(),
             Collections.emptyList(), event.isFreeOfCharge(), null, event.getLocales(), Collections.emptyList(), Collections.emptyList());
@@ -192,7 +187,7 @@ public class WaitingQueueProcessorIntegrationTest {
         TicketCategory category = eventManager.loadTicketCategories(event).get(0);
         eventManager.updateCategory(category.getId(), event.getId(), new TicketCategoryModification(category.getId(), category.getName(), category.getMaxTickets() + 1,
             fromZonedDateTime(category.getInception(event.getZoneId())), fromZonedDateTime(category.getExpiration(event.getZoneId())), emptyMap(), category.getPrice(),
-            category.isAccessRestricted(), "", category.isBounded(), null, null, null, null, null), "admin");
+            category.isAccessRestricted(), "", category.isBounded(), null, null, null, null, null, 0), "admin");
 
         //now the waiting queue processor should create the reservation for the first in line
         waitingQueueSubscriptionProcessor.distributeAvailableSeats(event);
@@ -210,13 +205,13 @@ public class WaitingQueueProcessorIntegrationTest {
             new TicketCategoryModification(null, "default", boundedCategorySize,
                 new DateTimeModification(LocalDate.now().minusDays(1), LocalTime.now()),
                 new DateTimeModification(LocalDate.now().plusDays(2), LocalTime.now()),
-                DESCRIPTION, BigDecimal.ZERO, false, "", true, null, null, null, null, null));
+                DESCRIPTION, BigDecimal.ZERO, false, "", true, null, null, null, null, null, 0));
 
         if(withUnboundedCategory) {
              categories.add(new TicketCategoryModification(null, "unbounded", 0,
                  new DateTimeModification(LocalDate.now().minusDays(1), LocalTime.now()),
                  new DateTimeModification(LocalDate.now().plusDays(2), LocalTime.now()),
-                 DESCRIPTION, BigDecimal.ZERO, false, "", false, null, null, null, null, null));
+                 DESCRIPTION, BigDecimal.ZERO, false, "", false, null, null, null, null, null, 0));
         }
 
         Pair<Event, String> pair = initEvent(categories, organizationRepository, userManager, eventManager, eventRepository);
@@ -227,22 +222,22 @@ public class WaitingQueueProcessorIntegrationTest {
         assertEquals(boundedCategorySize, boundedReserved.size());
         List<Integer> reserved = new ArrayList<>(boundedReserved);
         String reservationId = UUID.randomUUID().toString();
-        ticketReservationRepository.createNewReservation(reservationId, DateUtils.addHours(new Date(), 1), null, Locale.ITALIAN.getLanguage(), event.getId(), event.getVat(), event.isVatIncluded());
+        ticketReservationRepository.createNewReservation(reservationId, ZonedDateTime.now(), DateUtils.addHours(new Date(), 1), null, Locale.ITALIAN.getLanguage(), event.getId(), event.getVat(), event.isVatIncluded(), event.getCurrency());
         List<Integer> reservedForUpdate = withUnboundedCategory ? reserved.subList(0, 19) : reserved;
-        ticketRepository.reserveTickets(reservationId, reservedForUpdate, bounded.getId(), Locale.ITALIAN.getLanguage(), 0);
+        ticketRepository.reserveTickets(reservationId, reservedForUpdate, bounded.getId(), Locale.ITALIAN.getLanguage(), 0, "CHF");
         if(withUnboundedCategory) {
             TicketCategory unbounded = ticketCategories.stream().filter(t->t.getName().equals("unbounded")).findFirst().orElseThrow(IllegalStateException::new);
             List<Integer> unboundedReserved = ticketRepository.selectNotAllocatedFreeTicketsForPreReservation(event.getId(), 20);
             assertEquals(1, unboundedReserved.size());
             reserved.addAll(unboundedReserved);
-            ticketRepository.reserveTickets(reservationId, reserved.subList(19, 20), unbounded.getId(), Locale.ITALIAN.getLanguage(), 0);
+            ticketRepository.reserveTickets(reservationId, reserved.subList(19, 20), unbounded.getId(), Locale.ITALIAN.getLanguage(), 0, "CHF");
         }
         ticketRepository.updateTicketsStatusWithReservationId(reservationId, Ticket.TicketStatus.ACQUIRED.name());
 
         //sold-out
-        waitingQueueManager.subscribe(event, new CustomerName("Giuseppe Garibaldi", "Giuseppe", "Garibaldi", event), "peppino@garibaldi.com", null, Locale.ENGLISH);
+        waitingQueueManager.subscribe(event, new CustomerName("Giuseppe Garibaldi", "Giuseppe", "Garibaldi", event.mustUseFirstAndLastName()), "peppino@garibaldi.com", null, Locale.ENGLISH);
         Thread.sleep(100L);//we are testing ordering, not concurrency...
-        waitingQueueManager.subscribe(event, new CustomerName("Nino Bixio", "Nino", "Bixio", event), "bixio@mille.org", null, Locale.ITALIAN);
+        waitingQueueManager.subscribe(event, new CustomerName("Nino Bixio", "Nino", "Bixio", event.mustUseFirstAndLastName()), "bixio@mille.org", null, Locale.ITALIAN);
         List<WaitingQueueSubscription> subscriptions = waitingQueueRepository.loadAll(event.getId());
         assertTrue(waitingQueueRepository.countWaitingPeople(event.getId()) == 2);
         assertTrue(subscriptions.stream().allMatch(w -> w.getSubscriptionType().equals(WaitingQueueSubscription.Type.SOLD_OUT)));

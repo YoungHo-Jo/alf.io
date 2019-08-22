@@ -16,6 +16,7 @@
  */
 package alfio.model;
 
+import alfio.model.support.JSONData;
 import alfio.model.transaction.PaymentProxy;
 import alfio.model.transaction.Transaction;
 import ch.digitalfondue.npjt.ConstructorAnnotationRowMapper.Column;
@@ -24,6 +25,7 @@ import lombok.Getter;
 import java.math.BigDecimal;
 import java.time.ZonedDateTime;
 import java.util.Date;
+import java.util.Map;
 import java.util.Optional;
 
 @Getter
@@ -32,29 +34,34 @@ public class TicketWithReservationAndTransaction {
 
     private final Ticket ticket;
     private final TicketReservation ticketReservation;
+    private final BillingDetails billingDetails;
     private final Optional<Transaction> transaction;
+    private final Integer ticketsCountInReservation;
+    private final String promoCode;
+    private final String specialPriceToken;
 
 
-    public TicketWithReservationAndTransaction(@Column("t_id") int id,
+    public TicketWithReservationAndTransaction(@Column("t_id") Integer id,
                                                @Column("t_uuid") String uuid,
                                                @Column("t_creation") ZonedDateTime creation,
                                                @Column("t_category_id") Integer categoryId,
                                                @Column("t_status") String status,
-                                               @Column("t_event_id") int eventId,
                                                @Column("t_tickets_reservation_id") String ticketsReservationId,
                                                @Column("t_full_name") String fullName,
                                                @Column("t_first_name") String firstName,
                                                @Column("t_last_name") String lastName,
                                                @Column("t_email_address") String email,
-                                               @Column("t_locked_assignment") boolean lockedAssignment,
+                                               @Column("t_locked_assignment") Boolean lockedAssignment,
                                                @Column("t_user_language") String userLanguage,
-                                               @Column("t_src_price_cts") int srcPriceCts,
-                                               @Column("t_final_price_cts") int finalPriceCts,
-                                               @Column("t_vat_cts") int vatCts,
-                                               @Column("t_discount_cts") int discountCts,
+                                               @Column("t_src_price_cts") Integer srcPriceCts,
+                                               @Column("t_final_price_cts") Integer finalPriceCts,
+                                               @Column("t_vat_cts") Integer vatCts,
+                                               @Column("t_discount_cts") Integer discountCts,
                                                @Column("t_ext_reference") String extReference,
+                                               @Column("t_currency_code") String currencyCode,
                                                //
                                                @Column("tr_id") String trId,
+                                               @Column("tr_event_id") int eventId,
                                                @Column("tr_validity") Date validity,
                                                @Column("tr_status") TicketReservation.TicketReservationStatus trStatus,
                                                @Column("tr_full_name") String trFullName,
@@ -78,6 +85,22 @@ public class TicketWithReservationAndTransaction {
                                                @Column("tr_invoice_requested") boolean invoiceRequested,
                                                @Column("tr_used_vat_percent") BigDecimal usedVadPercent,
                                                @Column("tr_vat_included") Boolean vatIncluded,
+                                               @Column("tr_creation_ts") ZonedDateTime reservationCreationTimestamp,
+                                               @Column("tr_registration_ts") ZonedDateTime reservationRegistrationTimestamp,
+                                               @Column("tr_customer_reference") String customerReference,
+
+                                               @Column("tr_src_price_cts") int reservationSrcPriceCts,
+                                               @Column("tr_final_price_cts") int reservationFinalPriceCts,
+                                               @Column("tr_vat_cts") int reservationVatCts,
+                                               @Column("tr_discount_cts") int reservationDiscountCts,
+                                               @Column("tr_currency_code") String reservationCurrencyCode,
+
+                                               @Column("tr_billing_address_company") String billingAddressCompany,
+                                               @Column("tr_billing_address_line1") String billingAddressLine1,
+                                               @Column("tr_billing_address_line2") String billingAddressLine2,
+                                               @Column("tr_billing_address_city") String billingAddressCity,
+                                               @Column("tr_billing_address_zip") String billingAddressZip,
+                                               @Column("tr_invoicing_additional_information") @JSONData TicketReservationInvoicingAdditionalInfo invoicingAdditionalInfo,
                                                //
                                                @Column("bt_id") Integer btId,
                                                @Column("bt_gtw_tx_id") String transactionId,
@@ -89,11 +112,18 @@ public class TicketWithReservationAndTransaction {
                                                @Column("bt_description") String description,
                                                @Column("bt_payment_proxy") String paymentProxy,
                                                @Column("bt_plat_fee") Long platformFee,
-                                               @Column("bt_gtw_fee") Long gatewayFee
+                                               @Column("bt_gtw_fee") Long gatewayFee,
+                                               @Column("bt_status") Transaction.Status transactionStatus,
+                                               @Column("bt_metadata") @JSONData Map<String, String> metadata,
+                                               @Column("tickets_count") Integer ticketsCount,
+
+                                               @Column("promo_code") String promoCode,
+                                               @Column("special_price_token") String specialPriceToken
                                                ) {
-        this.ticket = new Ticket(id, uuid, creation, categoryId, status, eventId, ticketsReservationId,
+
+        this.ticket = id != null ? new Ticket(id, uuid, creation, categoryId, status, eventId, ticketsReservationId,
             fullName, firstName, lastName, email, lockedAssignment, userLanguage,
-            srcPriceCts, finalPriceCts, vatCts, discountCts, extReference);
+            srcPriceCts, finalPriceCts, vatCts, discountCts, extReference, currencyCode) : null;
 
 
         this.ticketReservation = new TicketReservation(trId, validity, trStatus,
@@ -101,14 +131,22 @@ public class TicketWithReservationAndTransaction {
             billingAddress, confirmationTimestamp, latestReminder, paymentMethod,
             reminderSent, promoCodeDiscountId, automatic, trUserLanguage,
             directAssignmentRequested, invoiceNumber, invoiceModel, vatStatus, vatNr, vatCountryCode, invoiceRequested,
-            usedVadPercent, vatIncluded);
+            usedVadPercent, vatIncluded, reservationCreationTimestamp, customerReference,
+            reservationRegistrationTimestamp, reservationSrcPriceCts, reservationFinalPriceCts, reservationVatCts, reservationDiscountCts, reservationCurrencyCode);
+
+        this.billingDetails = new BillingDetails(billingAddressCompany, billingAddressLine1, billingAddressLine2, billingAddressZip, billingAddressCity, vatCountryCode, vatNr, invoicingAdditionalInfo);
 
         if(btId != null) {
             this.transaction = Optional.of(new Transaction(btId, transactionId, paymentId, reservationId,
-                timestamp, priceInCents, currency, description, paymentProxy, Optional.ofNullable(platformFee).orElse(0L), Optional.ofNullable(gatewayFee).orElse(0L)));
+                timestamp, priceInCents, currency, description, paymentProxy, Optional.ofNullable(platformFee).orElse(0L), Optional.ofNullable(gatewayFee).orElse(0L), transactionStatus, metadata));
         } else {
             this.transaction = Optional.empty();
         }
+
+        this.ticketsCountInReservation = ticketsCount;
+
+        this.promoCode = promoCode;
+        this.specialPriceToken = specialPriceToken;
 
     }
 }

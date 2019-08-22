@@ -16,8 +16,8 @@
  */
 package alfio.manager.system;
 
-import alfio.model.Event;
-import alfio.model.system.Configuration;
+import alfio.model.EventAndOrganizationId;
+import alfio.model.system.ConfigurationKeys;
 import lombok.AllArgsConstructor;
 import lombok.extern.log4j.Log4j2;
 import org.apache.commons.lang3.ArrayUtils;
@@ -25,7 +25,6 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.support.EncodedResource;
 import org.springframework.core.io.support.PropertiesLoaderUtils;
-import org.springframework.mail.MailException;
 import org.springframework.mail.MailParseException;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
@@ -39,9 +38,7 @@ import javax.mail.internet.MimeMessage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.Optional;
-import java.util.Properties;
+import java.util.*;
 
 import static alfio.model.system.ConfigurationKeys.*;
 
@@ -52,20 +49,26 @@ class SmtpMailer implements Mailer {
     private final ConfigurationManager configurationManager;
 
     @Override
-    public void send(Event event, String to, List<String> cc, String subject, String text,
+    public void send(EventAndOrganizationId event, String fromName, String to, List<String> cc, String subject, String text,
                      Optional<String> html, Attachment... attachments) {
-        MimeMessagePreparator preparator = (mimeMessage) -> {
+
+        var conf = configurationManager.getFor(Set.of(SMTP_FROM_EMAIL, MAIL_REPLY_TO,
+            SMTP_HOST, SMTP_PORT, SMTP_PROTOCOL,
+            SMTP_USERNAME, SMTP_PASSWORD, SMTP_PROPERTIES), ConfigurationLevel.event(event));
+
+        MimeMessagePreparator preparator = mimeMessage -> {
+
             MimeMessageHelper message = html.isPresent() || !ArrayUtils.isEmpty(attachments) ? new MimeMessageHelper(mimeMessage, true, "UTF-8")
                     : new MimeMessageHelper(mimeMessage, "UTF-8");
             message.setSubject(subject);
-            message.setFrom(configurationManager.getRequiredValue(Configuration.from(event.getOrganizationId(), event.getId(), SMTP_FROM_EMAIL)), event.getDisplayName());
-            String replyTo = configurationManager.getStringConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), MAIL_REPLY_TO), "");
+            message.setFrom(conf.get(SMTP_FROM_EMAIL).getRequiredValue(), fromName);
+            String replyTo = conf.get(MAIL_REPLY_TO).getValueOrDefault("");
             if(StringUtils.isNotBlank(replyTo)) {
                 message.setReplyTo(replyTo);
             }
             message.setTo(to);
             if(cc != null && !cc.isEmpty()){
-                message.setCc(cc.toArray(new String[cc.size()]));
+                message.setCc(cc.toArray(new String[0]));
             }
             if (html.isPresent()) {
                 message.setText(text, html.get());
@@ -82,20 +85,20 @@ class SmtpMailer implements Mailer {
             message.getMimeMessage().saveChanges();
             message.getMimeMessage().removeHeader("Message-ID");
         };
-        toMailSender(event).send(preparator);
+        toMailSender(conf).send(preparator);
     }
     
-    private JavaMailSender toMailSender(Event event) {
+    private static JavaMailSender toMailSender(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> conf) {
         JavaMailSenderImpl r = new CustomJavaMailSenderImpl();
         r.setDefaultEncoding("UTF-8");
 
-        r.setHost(configurationManager.getRequiredValue(Configuration.from(event.getOrganizationId(), event.getId(), SMTP_HOST)));
-        r.setPort(Integer.valueOf(configurationManager.getRequiredValue(Configuration.from(event.getOrganizationId(), event.getId(), SMTP_PORT))));
-        r.setProtocol(configurationManager.getRequiredValue(Configuration.from(event.getOrganizationId(), event.getId(), SMTP_PROTOCOL)));
-        r.setUsername(configurationManager.getStringConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), SMTP_USERNAME), null));
-        r.setPassword(configurationManager.getStringConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), SMTP_PASSWORD), null));
+        r.setHost(conf.get(SMTP_HOST).getRequiredValue());
+        r.setPort(Integer.parseInt(conf.get(SMTP_PORT).getRequiredValue()));
+        r.setProtocol(conf.get(SMTP_PROTOCOL).getRequiredValue());
+        r.setUsername(conf.get(SMTP_USERNAME).getValueOrDefault(null));
+        r.setPassword(conf.get(SMTP_PASSWORD).getValueOrDefault(null));
 
-        String properties = configurationManager.getStringConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), SMTP_PROPERTIES), null);
+        String properties = conf.get(SMTP_PROPERTIES).getValueOrDefault(null);
 
         if (properties != null) {
             try {
@@ -152,7 +155,7 @@ class SmtpMailer implements Mailer {
         }
         
         @Override
-        public MimeMessage createMimeMessage(InputStream contentStream) throws MailException {
+        public MimeMessage createMimeMessage(InputStream contentStream) {
             try {
                 return new CustomMimeMessage(getSession(), contentStream);
             }

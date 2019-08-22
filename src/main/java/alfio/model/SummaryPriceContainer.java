@@ -16,20 +16,27 @@
  */
 package alfio.model;
 
+import alfio.util.MonetaryUtil;
+
+import java.math.BigDecimal;
+import java.util.List;
+
 import static alfio.util.MonetaryUtil.centsToUnit;
-import static alfio.util.MonetaryUtil.unitToCents;
 
 public interface SummaryPriceContainer extends PriceContainer {
-    Integer getVatCts();
+
     Integer getFinalPriceCts();
 
-    default int getSummaryPriceBeforeVatCts() {
-        PriceContainer.VatStatus vatStatus = getVatStatus();
-        if(vatStatus == PriceContainer.VatStatus.NOT_INCLUDED_EXEMPT) {
-            return getSrcPriceCts();
-        } else if(vatStatus == PriceContainer.VatStatus.INCLUDED_EXEMPT) {
-            return getSrcPriceCts() + unitToCents(vatStatus.extractVat(centsToUnit(getSrcPriceCts()), getVatPercentageOrZero()));
-        }
-        return getFinalPriceCts() - getVatCts();
+    static int getSummaryPriceBeforeVatCts(List<? extends SummaryPriceContainer> elements) {
+        var currencyCode = !elements.isEmpty() ? elements.get(0).getCurrencyCode() : null;
+        return elements.stream().map(item -> {
+            PriceContainer.VatStatus vatStatus = item.getVatStatus();
+            if(vatStatus == PriceContainer.VatStatus.NOT_INCLUDED_EXEMPT) {
+                return MonetaryUtil.centsToUnit(item.getSrcPriceCts(), currencyCode);
+            } else if(vatStatus == PriceContainer.VatStatus.INCLUDED_EXEMPT) {
+                return MonetaryUtil.centsToUnit(item.getSrcPriceCts(), currencyCode).add(vatStatus.extractRawVAT(centsToUnit(item.getSrcPriceCts(), item.getCurrencyCode()), item.getVatPercentageOrZero()));
+            }
+            return MonetaryUtil.centsToUnit(item.getFinalPriceCts(), currencyCode).subtract(item.getRawVAT());
+        }).reduce(BigDecimal::add).map(p -> MonetaryUtil.unitToCents(p, currencyCode)).orElse(0);
     }
 }

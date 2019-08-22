@@ -33,23 +33,29 @@
 package alfio.controller.api.admin;
 
 import alfio.controller.support.TemplateProcessor;
+import alfio.manager.ExtensionManager;
 import alfio.manager.FileUploadManager;
 import alfio.manager.UploadedResourceManager;
+import alfio.manager.i18n.MessageSourceManager;
 import alfio.manager.user.UserManager;
+import alfio.model.ContentLanguage;
 import alfio.model.Event;
+import alfio.model.PriceContainer;
 import alfio.model.UploadedResource;
 import alfio.model.modification.UploadBase64FileModification;
 import alfio.model.user.Organization;
 import alfio.repository.EventRepository;
 import alfio.repository.user.OrganizationRepository;
+import alfio.util.LocaleUtil;
 import alfio.util.TemplateManager;
 import alfio.util.TemplateResource;
 import com.samskivert.mustache.MustacheException;
+import lombok.AllArgsConstructor;
+import lombok.extern.log4j.Log4j2;
 import org.apache.commons.lang3.Validate;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.MessageSource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.util.StreamUtils;
 import org.springframework.web.bind.annotation.*;
@@ -59,8 +65,10 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.Principal;
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -68,69 +76,52 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static org.springframework.web.bind.annotation.RequestMethod.POST;
-
 @RestController
 @RequestMapping("/admin/api")
+@Log4j2
+@AllArgsConstructor
 public class ResourceController {
 
 
     private final UploadedResourceManager uploadedResourceManager;
     private final UserManager userManager;
     private final EventRepository eventRepository;
-    private final MessageSource messageSource;
+    private final MessageSourceManager messageSourceManager;
     private final TemplateManager templateManager;
     private final OrganizationRepository organizationRepository;
     private final FileUploadManager fileUploadManager;
+    private final ExtensionManager extensionManager;
 
-
-    @Autowired
-    public ResourceController(UploadedResourceManager uploadedResourceManager,
-                              UserManager userManager,
-                              EventRepository eventRepository,
-                              MessageSource messageSource,
-                              TemplateManager templateManager,
-                              OrganizationRepository organizationRepository,
-                              FileUploadManager fileUploadManager) {
-        this.uploadedResourceManager = uploadedResourceManager;
-        this.userManager = userManager;
-        this.eventRepository = eventRepository;
-        this.messageSource = messageSource;
-        this.templateManager = templateManager;
-        this.organizationRepository = organizationRepository;
-        this.fileUploadManager = fileUploadManager;
-    }
 
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public String handleSyntaxError(Exception ex) {
-        Optional<String> cause = Optional.ofNullable(ex.getCause()).filter(MustacheException.class::isInstance).map(Throwable::getMessage);
-        if(cause.isPresent()) {
-            return cause.get();
-        }
-        return "Something went wrong. Please check the syntax and retry";
+        log.warn("Exception in resource controller", ex);
+        Optional<String> cause = Optional.ofNullable(ex.getCause())
+            .filter(e -> e instanceof MustacheException || e instanceof TemplateProcessor.TemplateAccessException)
+            .map(Throwable::getMessage);
+        return cause.orElse("Something went wrong. Please check the syntax and retry");
     }
 
-    @RequestMapping(value = "/overridable-template/", method = RequestMethod.GET)
+    @GetMapping("/overridable-template/")
     public List<TemplateResource> getOverridableTemplates() {
         return Stream.of(TemplateResource.values()).filter(TemplateResource::overridable).collect(Collectors.toList());
     }
 
-    @RequestMapping(value = "/overridable-template/{name}/{locale}", method = RequestMethod.GET)
+    @GetMapping("/overridable-template/{name}/{locale}")
     public void getTemplate(@PathVariable("name") TemplateResource name, @PathVariable("locale") String locale, HttpServletResponse response) throws IOException {
-        response.setContentType("text/plain");
         ByteArrayOutputStream os = new ByteArrayOutputStream();
         try (InputStream is = new ClassPathResource(name.classPath()).getInputStream()) {
-            StreamUtils.copy(is, os);
+            is.transferTo(os);
         }
-        Locale loc = Locale.forLanguageTag(locale);
+        Locale loc = LocaleUtil.forLanguageTag(locale);
         String template = new String(os.toByteArray(), StandardCharsets.UTF_8);
 
-        response.setContentType("text/plain");
-        response.getWriter().print(TemplateManager.translate(template, loc, messageSource));
+        response.setContentType(MediaType.TEXT_PLAIN_VALUE);
+        response.getWriter().print(TemplateManager.translate(template, loc, messageSourceManager.getRootMessageSource()));
     }
 
-    @RequestMapping(value = "/overridable-template/{name}/{locale}/preview", method = RequestMethod.POST)
+    @PostMapping("/overridable-template/{name}/{locale}/preview")
     public void previewTemplate(@PathVariable("name") TemplateResource name, @PathVariable("locale") String locale,
                                 @RequestParam(required = false, value = "organizationId") Integer organizationId,
                                 @RequestParam(required = false, value = "eventId") Integer eventId,
@@ -139,27 +130,37 @@ public class ResourceController {
                                 HttpServletResponse response) throws IOException {
 
 
-        Locale loc = Locale.forLanguageTag(locale);
+        Locale loc = LocaleUtil.forLanguageTag(locale);
 
-        if(organizationId != null && eventId != null) {
-            checkAccess(organizationId, eventId, principal);
-            Event event = eventRepository.findById(eventId);
+        if (organizationId != null) {
+            Event event;
+            if (eventId!= null) {
+                checkAccess(organizationId, eventId, principal);
+                event =  eventRepository.findById(eventId);
+            } else {
+                checkAccess(organizationId, principal);
+                event = new Event(-1, Event.EventType.INTERNAL, "TEST", "TEST", "TEST", "0", "0", ZonedDateTime.now(),
+                    ZonedDateTime.now(), "Europe/Zurich", "http://localhost", "http://localhost", null,
+                    "http://localhost", null, null, "CHF", BigDecimal.TEN, null, "42", organizationId,
+                    ContentLanguage.ALL_LANGUAGES_IDENTIFIER, 0, PriceContainer.VatStatus.NONE, "1", Event.Status.PUBLIC);
+            }
+
             Organization organization = organizationRepository.getById(organizationId);
             Optional<TemplateResource.ImageData> image = TemplateProcessor.extractImageModel(event, fileUploadManager);
             Map<String, Object> model = name.prepareSampleModel(organization, event, image);
-            String renderedTemplate = templateManager.renderString(template.getFileAsString(), model, loc, name.getTemplateOutput());
-            if("text/plain".equals(name.getRenderedContentType())) {
+            String renderedTemplate = templateManager.renderString(event, template.getFileAsString(), model, loc, name.getTemplateOutput());
+            if(MediaType.TEXT_PLAIN_VALUE.equals(name.getRenderedContentType())) {
                 response.addHeader("Content-Disposition", "attachment; filename="+name.name()+".txt");
-                response.setContentType("text/plain");
+                response.setContentType(MediaType.TEXT_PLAIN_VALUE);
                 response.setCharacterEncoding("UTF-8");
                 try(OutputStream os = response.getOutputStream()) {
                     StreamUtils.copy(renderedTemplate,StandardCharsets.UTF_8, os);
                 }
-            } else if ("application/pdf".equals(name.getRenderedContentType())) {
-                response.setContentType("application/pdf");
-                response.addHeader("Content-Disposition", "attachment; filename="+name.name()+".pdf");
+            } else if (MediaType.APPLICATION_PDF_VALUE.equals(name.getRenderedContentType())) {
                 try (OutputStream os = response.getOutputStream()) {
-                    TemplateProcessor.prepareItextRenderer(renderedTemplate).createPDF(os);
+                    response.setContentType(MediaType.APPLICATION_PDF_VALUE);
+                    response.addHeader("Content-Disposition", "attachment; filename="+name.name()+".pdf");
+                    TemplateProcessor.renderToPdf(renderedTemplate, os, extensionManager, event);
                 }
             } else {
                 throw new IllegalStateException("cannot enter here!");
@@ -170,19 +171,19 @@ public class ResourceController {
 
     //------------------
 
-    @RequestMapping(value = "/resource/", method = RequestMethod.GET)
+    @GetMapping("/resource/")
     public List<UploadedResource> findAll(Principal principal) {
         checkAccess(principal);
         return uploadedResourceManager.findAll();
     }
 
-    @RequestMapping(value = "/resource-organization/{organizationId}", method = RequestMethod.GET)
+    @GetMapping("/resource-organization/{organizationId}")
     public List<UploadedResource> findAllForOrganization(@PathVariable("organizationId") int organizationId, Principal principal) {
         checkAccess(organizationId, principal);
         return uploadedResourceManager.findAll(organizationId);
     }
 
-    @RequestMapping(value = "/resource-event/{organizationId}/{eventId}", method = RequestMethod.GET)
+    @GetMapping("/resource-event/{organizationId}/{eventId}")
     public List<UploadedResource> findAllForEvent(@PathVariable("organizationId") int organizationId, @PathVariable("eventId") int eventId, Principal principal) {
         checkAccess(organizationId, eventId, principal);
         return uploadedResourceManager.findAll(organizationId, eventId);
@@ -191,7 +192,7 @@ public class ResourceController {
 
     //------------------
 
-    @RequestMapping(value = "/resource/{name}/metadata", method = RequestMethod.GET)
+    @GetMapping("/resource/{name}/metadata")
     public ResponseEntity<UploadedResource> getMetadata(@PathVariable("name") String name, Principal principal) {
         checkAccess(principal);
         if (uploadedResourceManager.hasResource(name)) {
@@ -201,7 +202,7 @@ public class ResourceController {
         }
     }
 
-    @RequestMapping(value = "/resource-organization/{organizationId}/{name}/metadata", method = RequestMethod.GET)
+    @GetMapping("/resource-organization/{organizationId}/{name}/metadata")
     public ResponseEntity<UploadedResource> getMetadata(@PathVariable("organizationId") int organizationId, @PathVariable("name") String name, Principal principal) {
         checkAccess(organizationId, principal);
         if (uploadedResourceManager.hasResource(organizationId, name)) {
@@ -211,7 +212,7 @@ public class ResourceController {
         }
     }
 
-    @RequestMapping(value = "/resource-event/{organizationId}/{eventId}/{name}/metadata", method = RequestMethod.GET)
+    @GetMapping("/resource-event/{organizationId}/{eventId}/{name}/metadata")
     public ResponseEntity<UploadedResource> getMetadata(@PathVariable("organizationId") int organizationId, @PathVariable("eventId") int eventId, @PathVariable("name") String name, Principal principal) {
         checkAccess(organizationId, eventId, principal);
         if (uploadedResourceManager.hasResource(organizationId, eventId, name)) {
@@ -223,28 +224,32 @@ public class ResourceController {
 
     //------------------
 
-    @RequestMapping(value = "/resource/", method = POST)
+    @PostMapping("/resource/")
     public void uploadFile(@RequestBody UploadBase64FileModification upload, Principal principal) {
         checkAccess(principal);
-        uploadedResourceManager.saveResource(upload);
+        uploadedResourceManager.saveResource(upload).orElseThrow(IllegalArgumentException::new);
     }
 
-    @RequestMapping(value = "/resource-organization/{organizationId}/", method = POST)
+    @PostMapping("/resource-organization/{organizationId}/")
     public void uploadFile(@PathVariable("organizationId") int organizationId, @RequestBody UploadBase64FileModification upload, Principal principal) {
         checkAccess(organizationId, principal);
-        uploadedResourceManager.saveResource(organizationId, upload);
+        uploadedResourceManager.saveResource(organizationId, upload).orElseThrow(IllegalArgumentException::new);
     }
 
-    @RequestMapping(value = "/resource-event/{organizationId}/{eventId}/", method = POST)
+    @PostMapping("/resource-event/{organizationId}/{eventId}/")
     public void uploadFile(@PathVariable("organizationId") int organizationId, @PathVariable("eventId") int eventId, @RequestBody UploadBase64FileModification upload, Principal principal) {
         checkAccess(organizationId, eventId, principal);
-        uploadedResourceManager.saveResource(organizationId, eventId, upload);
+        uploadedResourceManager.saveResource(organizationId, eventId, upload).orElseThrow(IllegalArgumentException::new);
     }
 
     //------------------
-    @RequestMapping(value = "/resource/{name:.*}", method = RequestMethod.GET)
+    @GetMapping("/resource/{name:.*}")
     public void outputContent(@PathVariable("name") String name, Principal principal, HttpServletResponse response) throws IOException {
         checkAccess(principal);
+        if (!uploadedResourceManager.hasResource(name)) {
+            response.sendError(HttpServletResponse.SC_NOT_FOUND);
+            return;
+        }
         UploadedResource metadata = uploadedResourceManager.get(name);
         try (OutputStream os = response.getOutputStream()) {
             response.setContentType(metadata.getContentType());
@@ -253,9 +258,13 @@ public class ResourceController {
         }
     }
 
-    @RequestMapping(value = "/resource-organization/{organizationId}/{name:.*}", method = RequestMethod.GET)
+    @GetMapping("/resource-organization/{organizationId}/{name:.*}")
     public void outputContent(@PathVariable("organizationId") int organizationId, @PathVariable("name") String name, Principal principal, HttpServletResponse response) throws IOException {
         checkAccess(organizationId, principal);
+        if (!uploadedResourceManager.hasResource(organizationId, name)) {
+            response.sendError(HttpServletResponse.SC_NOT_FOUND);
+            return;
+        }
         UploadedResource metadata = uploadedResourceManager.get(organizationId, name);
         try (OutputStream os = response.getOutputStream()) {
             response.setContentType(metadata.getContentType());
@@ -264,9 +273,13 @@ public class ResourceController {
         }
     }
 
-    @RequestMapping(value = "/resource-event/{organizationId}/{eventId}/{name:.*}", method = RequestMethod.GET)
+    @GetMapping("/resource-event/{organizationId}/{eventId}/{name:.*}")
     public void outputContent(@PathVariable("organizationId") int organizationId, @PathVariable("eventId") int eventId, @PathVariable("name") String name, Principal principal, HttpServletResponse response) throws IOException {
         checkAccess(organizationId, eventId, principal);
+        if (!uploadedResourceManager.hasResource(organizationId, eventId, name)) {
+            response.sendError(HttpServletResponse.SC_NOT_FOUND);
+            return;
+        }
         UploadedResource metadata = uploadedResourceManager.get(organizationId, eventId, name);
         try (OutputStream os = response.getOutputStream()) {
             response.setContentType(metadata.getContentType());
@@ -277,19 +290,19 @@ public class ResourceController {
 
     //------------------
 
-    @RequestMapping(value = "/resource/{name:.*}", method = RequestMethod.DELETE)
+    @DeleteMapping("/resource/{name:.*}")
     public void delete(@PathVariable("name") String name, Principal principal) {
         checkAccess(principal);
         uploadedResourceManager.deleteResource(name);
     }
 
-    @RequestMapping(value = "/resource-organization/{organizationId}/{name:.*}", method = RequestMethod.DELETE)
+    @DeleteMapping("/resource-organization/{organizationId}/{name:.*}")
     public void delete(@PathVariable("organizationId") int organizationId, @PathVariable("name") String name, Principal principal) {
         checkAccess(organizationId, principal);
         uploadedResourceManager.deleteResource(organizationId, name);
     }
 
-    @RequestMapping(value = "/resource-event/{organizationId}/{eventId}/{name:.*}", method = RequestMethod.DELETE)
+    @DeleteMapping("/resource-event/{organizationId}/{eventId}/{name:.*}")
     public void delete(@PathVariable("organizationId") int organizationId, @PathVariable("eventId") int eventId, @PathVariable("name") String name, Principal principal) {
         checkAccess(organizationId, eventId, principal);
         uploadedResourceManager.deleteResource(organizationId, eventId, name);
@@ -306,6 +319,6 @@ public class ResourceController {
     }
 
     private void checkAccess(int organizationId, int eventId, Principal principal) {
-        Validate.isTrue(eventRepository.findById(eventId).getOrganizationId() == organizationId && userManager.isOwnerOfOrganization(userManager.findUserByUsername(principal.getName()), organizationId));
+        Validate.isTrue(eventRepository.findEventAndOrganizationIdById(eventId).getOrganizationId() == organizationId && userManager.isOwnerOfOrganization(userManager.findUserByUsername(principal.getName()), organizationId));
     }
 }
