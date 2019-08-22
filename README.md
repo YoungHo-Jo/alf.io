@@ -142,4 +142,3 @@ It will expire the 02/07/23 (as https://www.apple.com/certificateauthority/).
  - disable-jobs: disable jobs
  - jdbc-session: enable saving the http session in the database
 
-
